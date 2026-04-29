@@ -36,4 +36,8 @@
 
 - 有必要的话添加强化功能
 
+- 在agent第一次跑賽題的 baseline 時，使用 shell 得到的結果會存爲 baseline_project.md 文件
+
+- 當agent此後運行直接讀取 baseline_project.md 則不需要重複 shell 來檢查目錄結果
+
 

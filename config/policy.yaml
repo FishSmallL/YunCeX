@@ -27,7 +27,7 @@ write_whitelist:
   - tasks
   - output
   - result.py
-
+  - C:\acm\AdoDAS2026-main
 
 # =========================
 # 黑名单（无论读写都禁止）

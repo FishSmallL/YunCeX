@@ -1,0 +1,42 @@
+{
+  "summary": "A1目标：在SCH_002+SCH_003小样本数据集上用GPU跑通baseline训练流程",
+  "todos": [
+    {
+      "content": "检查环境和依赖是否就绪（GPU、PyTorch、依赖库）",
+      "status": "completed",
+      "created_at": "2026-04-29T17:17:27.286863",
+      "updated_at": "2026-04-29T17:17:27.286863"
+    },
+    {
+      "content": "确认数据集和特征文件结构完整性",
+      "status": "completed",
+      "created_at": "2026-04-29T17:17:27.286863",
+      "updated_at": "2026-04-29T17:17:27.286863"
+    },
+    {
+      "content": "确认配置文件 sch002_sch003_quick.yaml 路径正确",
+      "status": "completed",
+      "created_at": "2026-04-29T17:17:27.286863",
+      "updated_at": "2026-04-29T17:17:27.286863"
+    },
+    {
+      "content": "运行A1训练：python train.py --task a1 --config tasks/a1/sch002_sch003_quick.yaml",
+      "status": "in_progress",
+      "created_at": "2026-04-29T17:17:27.286863",
+      "updated_at": "2026-04-29T17:17:27.286863"
+    },
+    {
+      "content": "验证训练输出：检查 best.pt、日志、校准文件等产出",
+      "status": "pending",
+      "created_at": "2026-04-29T17:17:27.286863",
+      "updated_at": "2026-04-29T17:17:27.286863"
+    }
+  ],
+  "created_at": "2026-04-29T17:17:27.286863",
+  "stats": {
+    "total": 5,
+    "completed": 3,
+    "in_progress": 1,
+    "pending": 1
+  }
+}

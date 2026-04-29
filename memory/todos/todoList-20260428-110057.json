@@ -1,0 +1,42 @@
+{
+  "summary": "A1目标：在小样本(SCH_002+SCH_003)上跑通baseline训练流程",
+  "todos": [
+    {
+      "content": "确认特征完整性（SCH_002/SCH_003 audio+video 所有session特征）",
+      "status": "completed",
+      "created_at": "2026-04-28T11:00:57.516426",
+      "updated_at": "2026-04-28T11:00:57.516426"
+    },
+    {
+      "content": "确认虚拟环境（Python 3.10.11, PyTorch 2.1.0+cu121, CUDA可用）",
+      "status": "completed",
+      "created_at": "2026-04-28T11:00:57.516426",
+      "updated_at": "2026-04-28T11:00:57.516426"
+    },
+    {
+      "content": "确认配置正确（sch002_sch003_quick.yaml 路径配置）",
+      "status": "completed",
+      "created_at": "2026-04-28T11:00:57.516426",
+      "updated_at": "2026-04-28T11:00:57.516426"
+    },
+    {
+      "content": "运行 A1 baseline 训练（3 epoch, batch_size=4, GPU）",
+      "status": "completed",
+      "created_at": "2026-04-28T11:00:57.516426",
+      "updated_at": "2026-04-28T11:00:57.516426"
+    },
+    {
+      "content": "验证训练产出（checkpoint, logs, 验证指标）",
+      "status": "completed",
+      "created_at": "2026-04-28T11:00:57.516426",
+      "updated_at": "2026-04-28T11:00:57.516426"
+    }
+  ],
+  "created_at": "2026-04-28T11:00:57.516426",
+  "stats": {
+    "total": 5,
+    "completed": 5,
+    "in_progress": 0,
+    "pending": 0
+  }
+}

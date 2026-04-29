@@ -1,0 +1,42 @@
+{
+  "summary": "A1 Baseline 训练调试 - 确保代码能在小样本数据集上成功运行",
+  "todos": [
+    {
+      "content": "检查现有环境依赖是否安装完整（PyTorch GPU 已确认可用）",
+      "status": "completed",
+      "created_at": "2026-04-29T12:09:03.911823",
+      "updated_at": "2026-04-29T12:09:03.911823"
+    },
+    {
+      "content": "验证 sch002_sch003_quick.yaml 配置是否正确指向数据路径",
+      "status": "completed",
+      "created_at": "2026-04-29T12:09:03.911823",
+      "updated_at": "2026-04-29T12:09:03.911823"
+    },
+    {
+      "content": "运行 A1 训练（使用 sch002_sch003_quick.yaml 配置）",
+      "status": "in_progress",
+      "created_at": "2026-04-29T12:09:03.911823",
+      "updated_at": "2026-04-29T12:09:03.911823"
+    },
+    {
+      "content": "检查训练输出和结果，确保训练流程完整跑通",
+      "status": "pending",
+      "created_at": "2026-04-29T12:09:03.911823",
+      "updated_at": "2026-04-29T12:09:03.911823"
+    },
+    {
+      "content": "记录训练结果和关键信息",
+      "status": "pending",
+      "created_at": "2026-04-29T12:09:03.911823",
+      "updated_at": "2026-04-29T12:09:03.911823"
+    }
+  ],
+  "created_at": "2026-04-29T12:09:03.912848",
+  "stats": {
+    "total": 5,
+    "completed": 2,
+    "in_progress": 1,
+    "pending": 2
+  }
+}
