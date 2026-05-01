@@ -73,6 +73,37 @@ class BaseLLMAdapter(ABC):
         """工具调用（Function Calling）"""
         pass
 
+    async def astream_invoke_with_tools(
+        self,
+        messages: List[Dict],
+        tools: List[Dict],
+        tool_choice: Union[str, Dict] = "auto",
+        **kwargs
+    ):
+        """
+        异步流式工具调用 —— 默认降级为非流式 ainvoke_with_tools。
+        子类（OpenAI/DeepSeek）会重写为真正的流式版本。
+
+        Yields:
+            dict，固定格式：
+              {"type": "text",       "content": str}          # LLM 文本 delta
+              {"type": "thinking",   "content": str}          # 推理过程 delta（thinking model）
+              {"type": "tool_calls", "tool_calls": list}      # 完整 tool_calls 列表（流结束后）
+              {"type": "done",       "response": response}    # 原始响应对象（用于后续处理）
+        """
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: self.invoke_with_tools(messages, tools, tool_choice, **kwargs)
+        )
+        # 把非流式响应包装成统一格式
+        msg = response.choices[0].message
+        if msg.content:
+            yield {"type": "text", "content": msg.content}
+        if msg.tool_calls:
+            yield {"type": "tool_calls", "tool_calls": msg.tool_calls}
+        yield {"type": "done", "response": response}
+
     def _is_thinking_model(self, model_name: str) -> bool:
         """判断是否为thinking model"""
         thinking_keywords = ["reasoner", "o1", "o3", "thinking"]
@@ -289,6 +320,86 @@ class OpenAIAdapter(BaseLLMAdapter):
 
         except Exception as e:
             raise HelloAgentsException(f"OpenAI Function Calling调用失败: {str(e)}")
+
+    async def astream_invoke_with_tools(
+        self,
+        messages: List[Dict],
+        tools: List[Dict],
+        tool_choice: Union[str, Dict] = "auto",
+        **kwargs
+    ):
+        """
+        OpenAI 真流式工具调用。
+
+        同时支持：
+        - 文本 delta 实时 yield（LLM 思考/回复）
+        - tool_calls delta 收集并在流结束后 yield 完整列表
+        - 兼容 reasoning_content（thinking model）
+
+        Yields:
+            {"type": "text",       "content": str}
+            {"type": "thinking",   "content": str}
+            {"type": "tool_calls", "tool_calls": list}
+            {"type": "done",       "response": None}
+        """
+        if not self._async_client:
+            self._async_client = self.create_async_client()
+
+        try:
+            stream = await self._async_client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                stream=True,
+                **kwargs
+            )
+
+            # 收集 tool_calls delta（按 index 拼接）
+            tool_calls_map: Dict[int, Dict] = {}
+
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+
+                # ── 文本 delta ──────────────────────────────────
+                if delta.content:
+                    yield {"type": "text", "content": delta.content}
+
+                # ── 推理 delta（thinking model）────────────────
+                rc = getattr(delta, "reasoning_content", None)
+                if rc:
+                    yield {"type": "thinking", "content": rc}
+
+                # ── tool_calls delta ────────────────────────────
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_map:
+                            tool_calls_map[idx] = {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""}
+                            }
+                        entry = tool_calls_map[idx]
+                        if tc_delta.id:
+                            entry["id"] += tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                entry["function"]["name"] += tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                entry["function"]["arguments"] += tc_delta.function.arguments
+
+            # 流结束 —— 输出完整 tool_calls
+            if tool_calls_map:
+                tool_calls = [tool_calls_map[i] for i in sorted(tool_calls_map)]
+                yield {"type": "tool_calls", "tool_calls": tool_calls}
+
+            yield {"type": "done", "response": None}
+
+        except Exception as e:
+            raise HelloAgentsException(f"OpenAI 流式 Function Calling 失败: {str(e)}")
 
 
 class AnthropicAdapter(BaseLLMAdapter):
@@ -846,6 +957,92 @@ class DeepSeekAdapter(BaseLLMAdapter):
         except Exception as e:
             raise HelloAgentsException(f"DeepSeek 异步 Function Calling 失败: {e}")
 
+    # ── 异步流式工具调用 ────────────────────────────────────
+    async def astream_invoke_with_tools(
+        self,
+        messages: List[Dict],
+        tools: List[Dict],
+        tool_choice: Union[str, Dict] = "auto",
+        **kwargs,
+    ):
+        """
+        DeepSeek 真流式工具调用。
+
+        特殊处理：
+        - 注入 thinking 参数（deepseek-v4-pro）
+        - 清洗消息（回传 reasoning_content，防 400）
+        - 收集 reasoning_content delta 并实时 yield
+        - 收集 tool_calls delta 拼接完整列表
+
+        Yields:
+            {"type": "text",       "content": str}
+            {"type": "thinking",   "content": str}
+            {"type": "tool_calls", "tool_calls": list}   # 完整列表，流结束后
+            {"type": "done",       "response": None}
+        """
+        if not self._async_client:
+            self._async_client = self.create_async_client()
+
+        cleaned_messages = self._clean_messages(messages)
+        merged = {**self._thinking_kwargs(), **kwargs}
+
+        call_kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": cleaned_messages,
+            "stream": True,
+            **merged,
+        }
+        if tools:
+            call_kwargs["tools"] = tools
+            call_kwargs["tool_choice"] = tool_choice
+
+        try:
+            stream = await self._async_client.chat.completions.create(**call_kwargs)
+
+            tool_calls_map: Dict[int, Dict] = {}
+
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+
+                # 文本 delta
+                if getattr(delta, "content", None):
+                    yield {"type": "text", "content": delta.content}
+
+                # 推理 delta（deepseek-v4-pro reasoning_content）
+                rc = getattr(delta, "reasoning_content", None)
+                if rc:
+                    yield {"type": "thinking", "content": rc}
+
+                # tool_calls delta
+                if getattr(delta, "tool_calls", None):
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_map:
+                            tool_calls_map[idx] = {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""}
+                            }
+                        entry = tool_calls_map[idx]
+                        if tc_delta.id:
+                            entry["id"] += tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                entry["function"]["name"] += tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                entry["function"]["arguments"] += tc_delta.function.arguments
+
+            if tool_calls_map:
+                tool_calls = [tool_calls_map[i] for i in sorted(tool_calls_map)]
+                yield {"type": "tool_calls", "tool_calls": tool_calls}
+
+            yield {"type": "done", "response": None}
+
+        except Exception as e:
+            raise HelloAgentsException(f"DeepSeek 流式 Function Calling 失败: {e}")
+
     # ── 消息清洗（核心）────────────────────────────────────
     def _clean_messages(self, messages: List[Dict]) -> List[Dict]:
         """
@@ -877,7 +1074,11 @@ class DeepSeekAdapter(BaseLLMAdapter):
                 if msg.get("tool_calls"):
                     safe["tool_calls"] = msg["tool_calls"]
                 # ★ 保留 reasoning_content（deepseek-v4-pro 工具调用轮次必须回传）
-                if msg.get("reasoning_content"):
+                # thinking model 要求每条 assistant 消息都必须带该字段，
+                # 即使本轮没有推理内容，也必须传空字符串，否则 API 返回 400
+                if self._is_thinking_model(self.model):
+                    safe["reasoning_content"] = msg.get("reasoning_content") or ""
+                elif msg.get("reasoning_content"):
                     safe["reasoning_content"] = msg["reasoning_content"]
             elif role == "tool":
                 safe = {

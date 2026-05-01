@@ -1025,61 +1025,68 @@ class ReActAgent(Agent):
 
                 # LLM 流式调用
                 full_response = ""
-                tool_calls_data = []
+                full_thinking = ""
+                tool_calls = None
 
                 try:
-                    # 关键修复：
-                    # 不再使用 astream_invoke()
-                    # 因为它不支持 tool_calls（Function Calling）
-                    #
-                    # 必须使用 ainvoke_with_tools()
-                    # 保证：
-                    # 一次请求同时拿到
-                    # 1. 文本内容
-                    # 2. tool_calls
-                    #
-                    # 避免：
-                    # stream 一次 + invoke 一次
-                    # 导致重复调用、tool_call_id 错乱、400 报错
+                    # ── 真流式工具调用 ──────────────────────────────────
+                    # 使用 adapter 的 astream_invoke_with_tools，
+                    # 文本 delta 实时 yield，tool_calls 流结束后一次性输出。
+                    # 这样用户能看到 LLM 的思考过程，同时保证 tool_calls 完整性。
+                    adapter = self.llm._adapter
 
-                    response = await self.llm.ainvoke_with_tools(
+                    thinking_started = False
+                    text_started = False
+
+                    async for event in adapter.astream_invoke_with_tools(
                         messages=messages,
                         tools=tool_schemas,
                         tool_choice="auto",
                         **kwargs
-                    )
+                    ):
+                        etype = event.get("type")
 
-                    response_message = response.choices[0].message
-                    print("\n========== DEBUG RESPONSE ==========")
-                    print("content =", response_message.content)
-                    print("tool_calls =", response_message.tool_calls)
+                        if etype == "thinking":
+                            chunk = event["content"]
+                            full_thinking += chunk
+                            if not thinking_started:
+                                thinking_started = True
+                                print("💭 [推理过程] ", end="", flush=True)
+                            print(chunk, end="", flush=True)
+                            # 推理过程也作为 LLM_CHUNK 发出，前端可自行区分
+                            yield StreamEvent.create(
+                                StreamEventType.LLM_CHUNK,
+                                self.name,
+                                chunk=chunk,
+                                chunk_type="thinking",
+                                step=current_step
+                            )
 
-                    if hasattr(response_message, "reasoning_content"):
-                        print("reasoning_content =", response_message.reasoning_content)
+                        elif etype == "text":
+                            chunk = event["content"]
+                            full_response += chunk
+                            if not text_started:
+                                text_started = True
+                                if thinking_started:
+                                    print()  # 推理结束换行
+                                print("🤖 [回复] ", end="", flush=True)
+                            print(chunk, end="", flush=True)
+                            yield StreamEvent.create(
+                                StreamEventType.LLM_CHUNK,
+                                self.name,
+                                chunk=chunk,
+                                chunk_type="text",
+                                step=current_step
+                            )
 
-                    print("====================================\n")
+                        elif etype == "tool_calls":
+                            tool_calls = event["tool_calls"]
 
-                    # content 可能为空（例如纯工具调用）
-                    full_response = response_message.content or ""
-
-                    # 保持你原来的 StreamEvent 输出逻辑
-                    if full_response:
-                        yield StreamEvent.create(
-                            StreamEventType.LLM_CHUNK,
-                            self.name,
-                            chunk=full_response,
-                            step=current_step
-                        )
-
-                        print(full_response, end="", flush=True)
-
-                    print()  # 换行
-
-                    # 直接使用同一次响应中的 tool_calls
-                    tool_calls = response_message.tool_calls
+                        elif etype == "done":
+                            print()  # 换行
 
                 except Exception as e:
-                    error_msg = f"LLM 调用失败: {str(e)}"
+                    error_msg = f"LLM 流式调用失败: {str(e)}"
                     print(f"❌ {error_msg}")
 
                     yield StreamEvent.create(
@@ -1095,14 +1102,12 @@ class ReActAgent(Agent):
                         error=error_msg
                     )
                     break
-                # 解析工具调用（需要完整响应）
-                # 注意：流式输出后需要重新调用 LLM 获取 tool_calls
-                # 这里简化处理：使用非流式调用获取工具调用
+                # 处理工具调用结果
                 try:
 
                     if not tool_calls:
                         # 没有工具调用，直接返回
-                        final_answer = response_message.content or full_response or "抱歉，我无法回答这个问题。"
+                        final_answer = full_response or "抱歉，我无法回答这个问题。"
 
                         yield StreamEvent.create(
                             StreamEventType.AGENT_FINISH,
@@ -1120,35 +1125,21 @@ class ReActAgent(Agent):
                         return
 
                     # 添加助手消息到历史
+                    # tool_calls 已经是 dict 格式（来自流式拼接），直接使用
                     assistant_message = {
                         "role": "assistant",
-                        "content": response_message.content or ""
+                        "content": full_response or ""
                     }
 
-                    # 如果存在 tool_calls，必须原样保留
-                    if getattr(response_message, "tool_calls", None):
-                        assistant_message["tool_calls"] = []
-
-                        for tc in response_message.tool_calls:
-                            parsed = self._parse_tool_call(tc)
-
-                            assistant_message["tool_calls"].append({
-                                "id": parsed["id"],
-                                "type": "function",
-                                "function": {
-                                    "name": parsed["name"],
-                                    "arguments": json.dumps(
-                                        parsed["arguments"],
-                                        ensure_ascii=False
-                                    )
-                                }
-                            })
+                    if tool_calls:
+                        # tool_calls 已是 dict 列表，arguments 已是原始 JSON 字符串，直接用
+                        assistant_message["tool_calls"] = tool_calls
 
                     # ★ deepseek-v4-pro：工具调用轮次必须回传 reasoning_content
-                    if getattr(response_message, "reasoning_content", None):
-                        assistant_message["reasoning_content"] = response_message.reasoning_content
+                    if full_thinking:
+                        assistant_message["reasoning_content"] = full_thinking
 
-                    messages.append(assistant_message)                    
+                    messages.append(assistant_message)
                     # 执行工具调用
                     tool_results = await self._execute_tools_async_stream(
                         tool_calls,

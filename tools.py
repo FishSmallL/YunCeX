@@ -1,25 +1,63 @@
 ﻿import os
-from typing import Any, Dict, List
 import ast
 import re
 import subprocess
 import time
+from typing import Any, Dict, List, Optional
 
 from hello_agents import ToolRegistry
 from hello_agents.tools import Tool, ToolErrorCode, ToolParameter, ToolResponse
 from policy import policy
 
 
-# =========================
-# 1. 提取 Python 代码块（安全版）
-# =========================
+# ══════════════════════════════════════════════════════════════
+# 全局配置
+# ══════════════════════════════════════════════════════════════
+
+# 训练/Shell 输出截断上限（日志类，3000 字符足够定位问题）
+MAX_LOG_OUTPUT_CHARS = 3_000
+
+# 文件读取返回给 LLM 的最大字符数。
+# 根源问题：原来 SmartReadFileTool 的 max_chars 默认值是 8000，
+# 但 react_agent 的 self.truncator.truncate() 会在工具返回后
+# 再做一次截断，其默认阈值往往只有 2000~4000 字符，
+# 两层截断叠加导致代码文件几乎必然被切断。
+# 解决方案：
+#   1. 把文件工具自身的 max_chars 提升到 20000（覆盖绝大多数代码文件）
+#   2. 新增 chunk_read 分段读取，文件太长时 agent 可以按段读取
+#   3. 在工具输出的 text 末尾附加行号信息，agent 可精确定位后续分段
+MAX_FILE_READ_CHARS = 20_000   # 单次读取上限（约 500-800 行代码）
+MAX_FILE_CHUNK_CHARS = 8_000   # 分段读取每段上限
+
+# run_training / run_shell 的默认超时（秒）
+DEFAULT_TIMEOUT = 600
+
+
+# ══════════════════════════════════════════════════════════════
+# 内部工具函数
+# ══════════════════════════════════════════════════════════════
+
+def _truncate_log(text: str, max_chars: int = MAX_LOG_OUTPUT_CHARS) -> str:
+    """
+    截断训练/shell 日志输出：保留头部摘要 + 尾部完整错误。
+    日志类输出 3000 字符已足够 agent 定位问题，避免上下文膨胀。
+    """
+    if len(text) <= max_chars:
+        return text
+    head = max_chars // 4
+    tail = max_chars - head - 50
+    return (
+        text[:head]
+        + f"\n\n... [日志过长，已截断中间 {len(text) - max_chars} 字符，保留头尾] ...\n\n"
+        + text[-tail:]
+    )
+
+
+
+
+
 def extract_python_code(text: str) -> str:
-    """
-    支持三种格式：
-    1) ```python ... ```
-    2) \"\"\" ... \"\"\" 或 ''' ... '''
-    3) 纯代码
-    """
+    """从文本中提取 Python 代码块（支持 markdown / 三引号 / 纯代码）"""
     if not isinstance(text, str) or not text.strip():
         raise ValueError("❌ 输入为空，无法提取代码")
 
@@ -30,23 +68,16 @@ def extract_python_code(text: str) -> str:
 
     candidates: List[str] = []
 
-    # markdown 代码块
     md_blocks = re.findall(r"```(?:python|py)?\s*(.*?)```", text, re.S | re.I)
     if md_blocks:
-        candidates.append(
-            "\n\n".join(normalize(b) for b in md_blocks if normalize(b))
-        )
+        candidates.append("\n\n".join(normalize(b) for b in md_blocks if normalize(b)))
 
-    # 三引号代码块
     triple_blocks: List[str] = []
     triple_blocks += re.findall(r'"""(.*?)"""', text, re.S)
     triple_blocks += re.findall(r"'''(.*?)'''", text, re.S)
     if triple_blocks:
-        candidates.append(
-            "\n\n".join(normalize(b) for b in triple_blocks if normalize(b))
-        )
+        candidates.append("\n\n".join(normalize(b) for b in triple_blocks if normalize(b)))
 
-    # 整段文本作为候选
     candidates.append(normalize(text))
 
     uniq: List[str] = []
@@ -54,7 +85,6 @@ def extract_python_code(text: str) -> str:
         if c and c not in uniq:
             uniq.append(c)
 
-    # 优先返回可通过 AST 校验的代码
     for code in uniq:
         try:
             ast.parse(code)
@@ -62,422 +92,739 @@ def extract_python_code(text: str) -> str:
         except SyntaxError:
             continue
 
-    # 都不合法时返回最长候选，让 validate_python 报错
     if uniq:
         return max(uniq, key=len)
 
     raise ValueError("❌ 未找到可用代码")
 
 
-# =========================
-# 2. Python 语法校验
-# =========================
 def validate_python(code: str) -> None:
     try:
         ast.parse(code)
     except SyntaxError as e:
-        raise ValueError(f"❌ Python语法错误: {e}") from e
+        raise ValueError(f"❌ Python 语法错误: {e}") from e
 
 
-# =========================
-# 3. 内部实现
-# =========================
-def _write_file_impl(content: str, output_file: str = "result.py") -> str:
-    code = extract_python_code(content)
-    validate_python(code)
+def _run_subprocess(
+    cmd: List[str],
+    timeout: int,
+    cwd: Optional[str] = None,
+    shell: bool = False,
+) -> Dict[str, Any]:
+    """
+    通用子进程执行器（run_training / run_shell 共用）。
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        f.write(code)
+    实时输出：
+    - 用 select 同时监听 stdout + stderr，逐行读取并立即 print，
+      让训练进度条/epoch 日志实时显示在终端。
+    - 同时把所有输出收集起来，最终截断后返回给 LLM。
+    - 超时后 kill() + wait() 确保子进程彻底退出。
+    """
+    import select
+    import sys
+    import threading
 
-    return f"✔ 已成功生成 {output_file}"
-
-
-def _run_training_impl(script_name: str, timeout: int = 600) -> Dict[str, Any]:
     try:
         process = subprocess.Popen(
-            ["python", "-u", script_name],
+            cmd,
+            shell=shell,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
-            bufsize=1,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+            bufsize=1,          # 行缓冲，配合 -u 让 Python 子进程实时 flush
         )
 
-        if process.stdout is None:
-            return {
-                "success": False,
-                "output": "执行异常: 无法读取训练输出流",
-                "accuracy": 0.0,
-            }
+        stdout_lines: List[str] = []
+        stderr_lines: List[str] = []
+        timed_out = False
 
-        all_output: List[str] = []
-        start = time.monotonic()
+        # Windows 不支持 select 对 PIPE，用线程方案统一处理
+        def _reader(pipe, collector):
+            # 逐字符读，正确处理 \r（tqdm进度条）和 \n（普通日志）
+            buf = []
+            while True:
+                ch = pipe.read(1)
+                if not ch:
+                    # 管道关闭，输出剩余缓冲
+                    if buf:
+                        line = "".join(buf)
+                        collector.append(line + "\n")
+                        print(line, flush=True)
+                    break
+                if ch == "\r":
+                    line = "".join(buf)
+                    buf = []
+                    collector.append(line + "\n")
+                    # \r 用 end="\r" 覆盖同一行（tqdm进度条效果）
+                    print(line, end="\r", flush=True)
+                elif ch == "\n":
+                    line = "".join(buf)
+                    buf = []
+                    collector.append(line + "\n")
+                    print(line, flush=True)
+                else:
+                    buf.append(ch)
+            pipe.close()
 
-        while True:
-            # 超时控制
-            if time.monotonic() - start > timeout:
-                process.kill()
-                process.wait()
-                return {
-                    "success": False,
-                    "output": "训练超时（timeout）",
-                    "accuracy": 0.0,
-                }
+        t_out = threading.Thread(target=_reader, args=(process.stdout, stdout_lines), daemon=True)
+        t_err = threading.Thread(target=_reader, args=(process.stderr, stderr_lines), daemon=True)
+        t_out.start()
+        t_err.start()
 
-            line = process.stdout.readline()
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            timed_out = True
 
-            if line:
-                print(line, end="", flush=True)
-                all_output.append(line)
-            elif process.poll() is not None:
-                break
+        # 等读取线程完成
+        t_out.join(timeout=5)
+        t_err.join(timeout=5)
 
-        return_code = process.wait()
-        output = "".join(all_output)
+        return_code = process.returncode if not timed_out else -1
 
-        match = re.search(
-            r"Final\s*Accuracy[:=]?\s*(\d+\.?\d*)",
-            output
-        )
-        accuracy = float(match.group(1)) if match else 0.0
+        combined = "".join(stdout_lines).strip()
+        if stderr_lines:
+            stderr_text = "".join(stderr_lines).strip()
+            if stderr_text:
+                combined += "\n\n[stderr]\n" + stderr_text
 
         return {
             "success": return_code == 0,
-            "output": output[-3000:],  # 防止输出过长
-            "accuracy": accuracy,
+            "output": _truncate_log(combined),
+            "return_code": return_code,
+            "timed_out": timed_out,
         }
 
+    except FileNotFoundError as e:
+        return {
+            "success": False,
+            "output": f"❌ 命令未找到: {e}",
+            "return_code": -1,
+            "timed_out": False,
+        }
     except Exception as e:
         return {
             "success": False,
-            "output": f"执行异常: {str(e)}",
-            "accuracy": 0.0,
+            "output": f"❌ 执行异常: {e}",
+            "return_code": -1,
+            "timed_out": False,
         }
 
 
-# =========================
-# 4. Tool：写文件
-# =========================
+def _parse_metrics(output: str) -> Dict[str, Any]:
+    """
+    从训练输出中解析关键指标。
+
+    根源问题修复：原来只解析 "Final Accuracy"，
+    但任务目标是 F1_cal >= 0.3，根本解析不到，
+    agent 永远看到 accuracy=0.0，无法判断是否达标。
+    """
+    metrics: Dict[str, Any] = {}
+
+    # F1_cal（任务核心指标）
+    m = re.search(r"[Ff]1[_\-]?[Cc]al(?:ibration)?[:\s=]+([0-9]+\.?[0-9]*)", output)
+    if m:
+        metrics["f1_cal"] = float(m.group(1))
+
+    # F1（通用）
+    m = re.search(r"\b[Ff]1[_\-][Ss]core[:\s=]+([0-9]+\.?[0-9]*)", output)
+    if m:
+        metrics["f1_score"] = float(m.group(1))
+
+    # Accuracy / Final Accuracy
+    m = re.search(r"(?:Final\s*)?[Aa]ccuracy[:\s=]+([0-9]+\.?[0-9]*)", output)
+    if m:
+        metrics["accuracy"] = float(m.group(1))
+
+    # Loss（最后一次出现）
+    losses = re.findall(r"[Ll]oss[:\s=]+([0-9]+\.?[0-9]*)", output)
+    if losses:
+        metrics["last_loss"] = float(losses[-1])
+
+    # Epoch（最后一次出现）
+    epochs = re.findall(r"[Ee]poch\s*[\[/]?\s*(\d+)", output)
+    if epochs:
+        metrics["last_epoch"] = int(epochs[-1])
+
+    return metrics
+
+
+# ══════════════════════════════════════════════════════════════
+# Tool 1：写文件
+# ══════════════════════════════════════════════════════════════
+
 class WriteFileTool(Tool):
-    def __init__(self, output_file: str = "result.py"):
+    """
+    将代码内容写入指定文件。
+
+    改进：
+    - output_file 改为运行时参数（不再硬编码 result.py），
+      agent 可以直接指定目标路径（如 C:\\acm\\AdoDAS2026-main\\train.py）。
+    - 自动创建父目录，避免因目录不存在而失败。
+    - 支持写入任意文本文件（不仅限于 .py），满足写 config/yaml 等需求。
+    """
+
+    def __init__(self):
         super().__init__(
             name="write_file",
-            description="提取输入中的 Python 代码并写入文件，自动进行语法校验。",
+            description=(
+                "将代码或文本内容写入文件。"
+                "自动进行 Python 语法校验（仅 .py 文件）。"
+                "output_file 须为完整路径，例如 C:\\acm\\project\\train.py"
+            ),
         )
-        self.output_file = output_file
 
     def get_parameters(self) -> List[ToolParameter]:
         return [
             ToolParameter(
                 name="content",
                 type="string",
-                description="要写入文件的代码内容",
+                description="要写入的代码或文本内容",
                 required=True,
-            )
+            ),
+            ToolParameter(
+                name="output_file",
+                type="string",
+                description="目标文件完整路径，例如 C:\\acm\\AdoDAS2026-main\\train.py",
+                required=True,
+            ),
         ]
 
     def run(self, parameters: Dict[str, Any]) -> ToolResponse:
-        content = parameters.get("content")
-
-        if content is None:
-            content = parameters.get("input")
+        content = parameters.get("content") or parameters.get("input")
+        output_file = parameters.get("output_file", "").strip()
 
         if not isinstance(content, str) or not content.strip():
             return ToolResponse.error(
                 code=ToolErrorCode.INVALID_PARAM,
-                message="缺少参数 content（不能为空）",
+                message="❌ 缺少参数 content（不能为空）",
             )
 
-        # 白名单控制
-        if not policy.is_allowed_write(self.output_file):
+        if not output_file:
             return ToolResponse.error(
                 code=ToolErrorCode.INVALID_PARAM,
-                message=(
-                    f"禁止写入文件：{self.output_file}\n"
-                    f"该路径不在写入白名单中。"
-                ),
+                message="❌ 缺少参数 output_file（目标文件路径不能为空）",
+            )
+
+        if not policy.is_allowed_write(output_file):
+            return ToolResponse.error(
+                code=ToolErrorCode.INVALID_PARAM,
+                message=f"❌ 禁止写入文件：{output_file}（不在写入白名单）",
             )
 
         try:
-            message = _write_file_impl(content, self.output_file)
+            # 对于 .py 文件，先尝试提取并校验语法
+            if output_file.endswith(".py"):
+                try:
+                    code = extract_python_code(content)
+                    validate_python(code)
+                except ValueError as e:
+                    return ToolResponse.error(
+                        code=ToolErrorCode.INVALID_FORMAT,
+                        message=str(e),
+                    )
+            else:
+                code = content.strip()
+
+            # 自动创建父目录
+            parent_dir = os.path.dirname(output_file)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+
+            with open(output_file, "w", encoding="utf-8") as f:
+                f.write(code)
 
             return ToolResponse.success(
-                text=message,
-                data={
-                    "output_file": self.output_file,
-                },
-            )
-
-        except ValueError as e:
-            return ToolResponse.error(
-                code=ToolErrorCode.INVALID_FORMAT,
-                message=str(e),
+                text=f"✅ 已写入文件：{output_file}（{len(code)} 字符）",
+                data={"output_file": output_file, "size": len(code)},
             )
 
         except Exception as e:
             return ToolResponse.error(
                 code=ToolErrorCode.INTERNAL_ERROR,
-                message=f"写文件失败: {e}",
+                message=f"❌ 写文件失败：{e}",
             )
 
 
-# =========================
-# 5. Tool：运行训练
-# =========================
+# ══════════════════════════════════════════════════════════════
+# Tool 2：运行训练脚本
+# ══════════════════════════════════════════════════════════════
+
 class RunTrainingTool(Tool):
-    def __init__(self, default_timeout: int = 600):
+    """
+    执行 Python 训练脚本并返回结果。
+
+    改进：
+    - 支持 working_dir 参数，解决相对路径引用资源失败的问题。
+    - 支持 extra_args 传递命令行参数（如 --epochs 30 --lr 0.001）。
+    - 解析 F1_cal / F1 / Accuracy / Loss，不再只看 Final Accuracy。
+    - 超时使用 communicate(timeout=) 代替 readline() 轮询，更可靠。
+    - stderr 单独捕获并附加在输出末尾，traceback 不再丢失。
+    - 输出截断策略：保留头部摘要 + 尾部（错误在尾部）。
+    """
+
+    def __init__(self, default_timeout: int = DEFAULT_TIMEOUT):
         super().__init__(
             name="run_training",
-            description="执行 Python 训练脚本并返回结果。",
+            description=(
+                "执行 Python 训练脚本，返回训练输出和关键指标（F1_cal、accuracy、loss 等）。"
+                "script_path 须为完整路径或相对于 working_dir 的路径。"
+            ),
         )
         self.default_timeout = default_timeout
 
     def get_parameters(self) -> List[ToolParameter]:
         return [
             ToolParameter(
-                name="script_name",
+                name="script_path",
                 type="string",
-                description="脚本路径",
+                description="训练脚本完整路径，例如 C:\\acm\\AdoDAS2026-main\\train.py",
                 required=True,
+            ),
+            ToolParameter(
+                name="working_dir",
+                type="string",
+                description=(
+                    "脚本工作目录（可选）。"
+                    "若脚本内有相对路径引用（如 ./data），必须设置此参数，"
+                    "例如 C:\\acm\\AdoDAS2026-main"
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="extra_args",
+                type="string",
+                description="额外命令行参数，例如 --epochs 50 --lr 0.0001（可选）",
+                required=False,
             ),
             ToolParameter(
                 name="timeout",
                 type="integer",
-                description="超时时间（秒）",
+                description=f"超时秒数，默认 {DEFAULT_TIMEOUT}",
                 required=False,
-                default=self.default_timeout,
+                default=DEFAULT_TIMEOUT,
             ),
         ]
 
     def run(self, parameters: Dict[str, Any]) -> ToolResponse:
-        script_name = parameters.get("script_name")
+        # 兼容旧参数名 script_name
+        script_path = (
+            parameters.get("script_path")
+            or parameters.get("script_name")
+            or parameters.get("input")
+            or ""
+        ).strip()
 
-        if script_name is None:
-            script_name = parameters.get("input")
-
-        if not isinstance(script_name, str) or not script_name.strip():
+        if not script_path:
             return ToolResponse.error(
                 code=ToolErrorCode.INVALID_PARAM,
-                message="缺少参数 script_name",
+                message="❌ 缺少参数 script_path",
             )
 
+        working_dir: Optional[str] = parameters.get("working_dir")
+        if working_dir:
+            working_dir = working_dir.strip() or None
+
+        extra_args_str: str = (parameters.get("extra_args") or "").strip()
+
         try:
-            timeout = int(
-                parameters.get("timeout", self.default_timeout)
-            )
+            timeout = int(parameters.get("timeout", self.default_timeout))
         except Exception:
             timeout = self.default_timeout
 
-        result = _run_training_impl(
-            script_name.strip(),
-            timeout
-        )
+        cmd = ["python", "-u", script_path]
+        if extra_args_str:
+            cmd += extra_args_str.split()
 
-        if result.get("success"):
+        result = _run_subprocess(cmd, timeout=timeout, cwd=working_dir)
+        output = result["output"]
+        metrics = _parse_metrics(output)
+
+        # ── 构造返回文本 ──────────────────────────────────────
+        status_icon = "✅" if result["success"] else "❌"
+        lines = [
+            f"{status_icon} 训练脚本执行{'成功' if result['success'] else '失败'}",
+            f"脚本：{script_path}",
+            f"工作目录：{working_dir or '（未指定）'}",
+            f"返回码：{result['return_code']}",
+        ]
+
+        if result.get("timed_out"):
+            lines.append(f"⚠️ 超时（{timeout}秒），进程已终止")
+
+        if metrics:
+            lines.append("\n【关键指标】")
+            if "f1_cal" in metrics:
+                f1 = metrics["f1_cal"]
+                flag = "🎉 已达标（≥0.3）" if f1 >= 0.3 else "⚠️ 未达标（<0.3）"
+                lines.append(f"  F1_cal = {f1:.4f}  {flag}")
+            if "f1_score" in metrics:
+                lines.append(f"  F1_score = {metrics['f1_score']:.4f}")
+            if "accuracy" in metrics:
+                lines.append(f"  Accuracy = {metrics['accuracy']:.4f}")
+            if "last_loss" in metrics:
+                lines.append(f"  Last Loss = {metrics['last_loss']:.6f}")
+            if "last_epoch" in metrics:
+                lines.append(f"  Last Epoch = {metrics['last_epoch']}")
+
+        lines.append("\n【训练输出】")
+        lines.append(output if output else "[无输出]")
+
+        return_response = ToolResponse.success if result["success"] else ToolResponse.error
+
+        if result["success"]:
             return ToolResponse.success(
-                text=f"训练完成",
-                data=result,
+                text="\n".join(lines),
+                data={
+                    "script_path": script_path,
+                    "return_code": result["return_code"],
+                    "metrics": metrics,
+                    "timed_out": result.get("timed_out", False),
+                },
+            )
+        else:
+            return ToolResponse.error(
+                code=ToolErrorCode.EXECUTION_ERROR,
+                message="\n".join(lines),
             )
 
-        return ToolResponse.error(
-            code=ToolErrorCode.EXECUTION_ERROR,
-            message=result.get("output", "训练失败"),
-        )
 
+# ══════════════════════════════════════════════════════════════
+# Tool 3：智能读文件
+# ══════════════════════════════════════════════════════════════
 
-# =========================
-# 6. Tool：智能读文件（目录 + 文件）
-# =========================
 class SmartReadFileTool(Tool):
     """
-    智能读取项目文件：
+    智能读取项目文件或目录结构。
 
-    情况1：
-    只给 base_path
-    → 返回目录结构
+    核心问题修复：
+    ─────────────────────────────────────────────────────────────
+    原来文件工具有两层截断：
+      第一层：工具自身 max_chars=8000（SmartReadFileTool.run）
+      第二层：react_agent 的 self.truncator.truncate()，
+              其内置阈值通常只有 2000~4000 字符
 
-    情况2：
-    给了 base_path + file_name
-    → 读取文件内容
+    两层叠加导致代码文件几乎必然被切断，agent 看到的是不完整的代码，
+    无法正确修改或理解逻辑。
 
-    情况3：
-    文件不存在
-    → 返回目录结构 + 提示
+    修复策略：
+      1. 提升单次读取上限到 20000 字符（覆盖 500-800 行的代码文件）
+      2. 新增 start_line / end_line 分段读取，文件很大时 agent 按段读
+      3. 返回文件总行数和字符数，让 agent 知道文件规模后决定是否分段
+      4. 新增 show_line_numbers 参数，默认开启行号（方便 agent 定位后修改）
+      5. 目录列表改为两层展开，agent 一次拿到完整项目结构
+    ─────────────────────────────────────────────────────────────
     """
 
     def __init__(self):
         super().__init__(
-            name="smart_read_file",
+            name="read_file",
             description=(
-                "智能读取项目文件。"
-                "若未提供 file_name，则返回目录结构；"
-                "若提供 file_name，则读取对应文件内容。"
+                "读取文件内容或列出目录结构。\n"
+                "【读文件】传入 file_path（完整文件路径），可选 start_line/end_line 分段读取\n"
+                "【读目录】传入 base_path（目录路径）列出两层目录树\n"
+                "【兼容】传入 base_path + file_name 等价于 file_path=base_path/file_name\n"
+                "提示：对于大文件，先读取全部获得行数，再用 start_line/end_line 分段读取"
             ),
         )
 
     def get_parameters(self) -> List[ToolParameter]:
         return [
             ToolParameter(
+                name="file_path",
+                type="string",
+                description="文件完整路径（优先）。例如 C:\\acm\\AdoDAS2026-main\\train.py",
+                required=False,
+            ),
+            ToolParameter(
                 name="base_path",
                 type="string",
-                description="项目目录路径，例如 D:\\project",
-                required=True,
+                description="目录路径。例如 C:\\acm\\AdoDAS2026-main",
+                required=False,
             ),
             ToolParameter(
                 name="file_name",
                 type="string",
-                description="要读取的文件名，可选，例如 train.py",
+                description="文件名（与 base_path 搭配使用）。例如 train.py",
                 required=False,
+            ),
+            ToolParameter(
+                name="start_line",
+                type="integer",
+                description="从第几行开始读取（从 1 开始，可选）。用于分段读取大文件",
+                required=False,
+            ),
+            ToolParameter(
+                name="end_line",
+                type="integer",
+                description="读到第几行结束（包含，可选）。与 start_line 配合使用",
+                required=False,
+            ),
+            ToolParameter(
+                name="show_line_numbers",
+                type="boolean",
+                description="是否显示行号（默认 true，方便定位代码位置）",
+                required=False,
+                default=True,
             ),
             ToolParameter(
                 name="max_chars",
                 type="integer",
-                description="最大读取字符数，默认 8000",
+                description=f"最大读取字符数，默认 {MAX_FILE_READ_CHARS}，一般不需要手动调整",
                 required=False,
-                default=8000,
+                default=MAX_FILE_READ_CHARS,
             ),
         ]
 
     def run(self, parameters: Dict[str, Any]) -> ToolResponse:
-        base_path = parameters.get("base_path")
-        file_name = parameters.get("file_name")
-        max_chars = parameters.get("max_chars", 8000)
+        file_path: str = (parameters.get("file_path") or "").strip()
+        base_path: str = (parameters.get("base_path") or parameters.get("input") or "").strip()
+        file_name: str = (parameters.get("file_name") or "").strip()
+        start_line: Optional[int] = parameters.get("start_line")
+        end_line: Optional[int] = parameters.get("end_line")
+        show_line_numbers: bool = parameters.get("show_line_numbers", True)
+        max_chars: int = int(parameters.get("max_chars", MAX_FILE_READ_CHARS))
 
-        if base_path is None:
-            base_path = parameters.get("input")
+        # ── 路径解析 ─────────────────────────────────────────
+        if not file_path:
+            if base_path and file_name:
+                file_path = os.path.join(base_path, file_name)
+            elif base_path:
+                # 只给目录 → 列目录结构
+                return self._list_dir(base_path)
+            else:
+                return ToolResponse.error(
+                    code=ToolErrorCode.INVALID_PARAM,
+                    message=(
+                        "❌ 参数不足。请提供以下之一：\n"
+                        "  file_path（完整文件路径）\n"
+                        "  base_path（目录路径）\n"
+                        "  base_path + file_name"
+                    ),
+                )
 
-        if not isinstance(base_path, str) or not base_path.strip():
+        # 如果传入的 file_path 实际上是目录，自动列目录
+        if os.path.isdir(file_path):
+            return self._list_dir(file_path)
+
+        return self._read_file(
+            file_path,
+            max_chars=max_chars,
+            start_line=int(start_line) if start_line is not None else None,
+            end_line=int(end_line) if end_line is not None else None,
+            show_line_numbers=bool(show_line_numbers),
+        )
+
+    # ──────────────────────────────────────────────────────────
+    # 内部：读文件
+    # ──────────────────────────────────────────────────────────
+    def _read_file(
+        self,
+        full_path: str,
+        max_chars: int,
+        start_line: Optional[int],
+        end_line: Optional[int],
+        show_line_numbers: bool,
+    ) -> ToolResponse:
+
+        if not policy.is_allowed_read(full_path):
             return ToolResponse.error(
                 code=ToolErrorCode.INVALID_PARAM,
-                message="缺少参数 base_path（不能为空）",
+                message=f"❌ 禁止读取：{full_path}（不在读取白名单）",
             )
 
-        if not os.path.exists(base_path):
+        if not os.path.exists(full_path):
+            parent = os.path.dirname(full_path)
+            hint = ""
+            if os.path.isdir(parent):
+                try:
+                    items = sorted(os.listdir(parent))
+                    hint = f"\n\n父目录 {parent} 的内容：\n" + "\n".join(items)
+                except Exception:
+                    pass
             return ToolResponse.error(
                 code=ToolErrorCode.INVALID_PARAM,
-                message=f"目录不存在：{base_path}",
+                message=f"❌ 文件不存在：{full_path}{hint}",
             )
 
-        if not os.path.isdir(base_path):
+        if not os.path.isfile(full_path):
             return ToolResponse.error(
                 code=ToolErrorCode.INVALID_PARAM,
-                message=f"不是目录：{base_path}",
-            )
-
-        # 白名单控制
-        if not policy.is_allowed_read(base_path):
-            return ToolResponse.error(
-                code=ToolErrorCode.INVALID_PARAM,
-                message=(
-                    f"禁止访问目录：{base_path}\n"
-                    f"该路径不在读取白名单中。"
-                ),
+                message=f"❌ 路径不是文件：{full_path}",
             )
 
         try:
-            items = os.listdir(base_path)
+            with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                all_lines = f.readlines()
 
-            # 情况1：没给 file_name，只返回目录结构
-            if not file_name:
-                return ToolResponse.success(
-                    text=(
-                        f"目录内容如下：\n"
-                        + "\n".join(items)
-                    ),
-                    data={
-                        "base_path": base_path,
-                        "items": items,
-                        "count": len(items),
-                    },
+            total_lines = len(all_lines)
+            total_chars = sum(len(l) for l in all_lines)
+            file_size_kb = os.path.getsize(full_path) // 1024
+
+            # ── 行范围切片 ───────────────────────────────────
+            # start_line/end_line 从 1 开始，转为 0-based index
+            s = (start_line - 1) if start_line and start_line >= 1 else 0
+            e = end_line if end_line and end_line <= total_lines else total_lines
+            s = max(0, min(s, total_lines))
+            e = max(s, min(e, total_lines))
+
+            selected_lines = all_lines[s:e]
+            is_partial = (s > 0 or e < total_lines)
+
+            # ── 加行号 ───────────────────────────────────────
+            if show_line_numbers:
+                width = len(str(total_lines))
+                numbered = [
+                    f"{s + i + 1:>{width}} │ {line}"
+                    for i, line in enumerate(selected_lines)
+                ]
+                content = "".join(numbered)
+            else:
+                content = "".join(selected_lines)
+
+            # ── 字符数超限处理 ───────────────────────────────
+            # 关键：这里的截断只在单次请求的字符确实超过上限时才触发，
+            # 而不是像原来那样 8000 字符必截。
+            # agent 可以通过 start_line/end_line 分段读取避免截断。
+            truncated = False
+            if len(content) > max_chars:
+                truncated = True
+                # 按行截断，避免切断一行中间
+                cut_lines = []
+                used = 0
+                for line in (numbered if show_line_numbers else selected_lines):
+                    if used + len(line) > max_chars:
+                        break
+                    cut_lines.append(line)
+                    used += len(line)
+                content = "".join(cut_lines)
+                actual_end_line = s + len(cut_lines)
+            else:
+                actual_end_line = e
+
+            # ── 构建返回头部 ─────────────────────────────────
+            header_lines = [
+                f"📄 文件：{full_path}",
+                f"   总行数：{total_lines} 行  |  总字符：{total_chars}  |  大小：{file_size_kb} KB",
+            ]
+
+            if is_partial or truncated:
+                showing_start = s + 1
+                showing_end = actual_end_line
+                header_lines.append(
+                    f"   当前显示：第 {showing_start} ~ {showing_end} 行"
                 )
+                remaining = total_lines - actual_end_line
+                if remaining > 0:
+                    header_lines.append(
+                        f"   ⚠️  还有 {remaining} 行未显示。"
+                        f"如需继续读取，请使用 start_line={actual_end_line + 1}"
+                        f"（可选 end_line={min(actual_end_line + 300, total_lines)}）"
+                    )
+            else:
+                header_lines.append("   ✅ 已显示全部内容")
 
-            # 情况2：文件不存在
-            if file_name not in items:
-                return ToolResponse.error(
-                    code=ToolErrorCode.INVALID_PARAM,
-                    message=(
-                        f"文件不存在：{file_name}\n\n"
-                        f"当前目录内容如下：\n"
-                        + "\n".join(items)
-                    ),
-                )
-
-            full_path = os.path.join(base_path, file_name)
-
-            if not os.path.isfile(full_path):
-                return ToolResponse.error(
-                    code=ToolErrorCode.INVALID_PARAM,
-                    message=f"{file_name} 不是文件，可能是文件夹",
-                )
-
-            if not policy.is_allowed_read(full_path):
-                return ToolResponse.error(
-                    code=ToolErrorCode.INVALID_PARAM,
-                    message=(
-                        f"禁止读取文件：{full_path}\n"
-                        f"该路径不在读取白名单中。"
-                    ),
-                )
-
-            with open(full_path, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            original_length = len(content)
-
-            if original_length > max_chars:
-                content = (
-                    content[:max_chars]
-                    + "\n\n[文件内容过长，已自动截断]"
-                )
+            header = "\n".join(header_lines)
+            separator = "─" * 60
+            full_text = f"{header}\n{separator}\n{content}"
 
             return ToolResponse.success(
-                text=(
-                    f"成功读取文件：{full_path}\n\n"
-                    f"目录内容：\n"
-                    + "\n".join(items)
-                    + "\n\n文件内容如下：\n"
-                    + content
-                ),
+                text=full_text,
                 data={
-                    "base_path": base_path,
-                    "file_name": file_name,
                     "full_path": full_path,
-                    "content_length": original_length,
-                    "directory_items": items,
+                    "total_lines": total_lines,
+                    "total_chars": total_chars,
+                    "showing_lines": [s + 1, actual_end_line],
+                    "truncated": truncated,
+                    "has_more": actual_end_line < total_lines,
                 },
             )
 
         except Exception as e:
             return ToolResponse.error(
                 code=ToolErrorCode.INTERNAL_ERROR,
-                message=f"读取失败：{str(e)}",
+                message=f"❌ 读取失败：{e}",
             )
 
-# =========================
-# 5.5 Tool：运行 Shell 命令
-# =========================
+    # ──────────────────────────────────────────────────────────
+    # 内部：列目录（两层展开）
+    # ──────────────────────────────────────────────────────────
+    def _list_dir(self, dir_path: str) -> ToolResponse:
+        if not policy.is_allowed_read(dir_path):
+            return ToolResponse.error(
+                code=ToolErrorCode.INVALID_PARAM,
+                message=f"❌ 禁止访问目录：{dir_path}（不在读取白名单）",
+            )
+
+        if not os.path.isdir(dir_path):
+            return ToolResponse.error(
+                code=ToolErrorCode.INVALID_PARAM,
+                message=f"❌ 目录不存在：{dir_path}",
+            )
+
+        try:
+            lines = [f"📁 目录结构：{dir_path}"]
+            for item in sorted(os.listdir(dir_path)):
+                item_path = os.path.join(dir_path, item)
+                if os.path.isdir(item_path):
+                    lines.append(f"├─ 📁 {item}/")
+                    try:
+                        sub_items = sorted(os.listdir(item_path))
+                        for idx, sub in enumerate(sub_items):
+                            sub_path = os.path.join(item_path, sub)
+                            icon = "📁" if os.path.isdir(sub_path) else "📄"
+                            prefix = "│  └─" if idx == len(sub_items) - 1 else "│  ├─"
+                            lines.append(f"{prefix} {icon} {sub}")
+                    except PermissionError:
+                        lines.append("│  └─ [权限不足]")
+                else:
+                    size = os.path.getsize(item_path)
+                    size_str = f"{size // 1024} KB" if size >= 1024 else f"{size} B"
+                    lines.append(f"├─ 📄 {item}  ({size_str})")
+
+            return ToolResponse.success(
+                text="\n".join(lines),
+                data={"dir_path": dir_path},
+            )
+
+        except Exception as e:
+            return ToolResponse.error(
+                code=ToolErrorCode.INTERNAL_ERROR,
+                message=f"❌ 读取目录失败：{e}",
+            )
+
+
+# ══════════════════════════════════════════════════════════════
+# Tool 4：运行 Shell 命令
+# ══════════════════════════════════════════════════════════════
+
 class RunShellTool(Tool):
     """
-    专门执行 shell 命令，例如：
+    执行 Shell 命令。
 
-    python result.py
-    pip install -r requirements.txt
-    dir
-    cd xxx && python train.py
-
-    避免 LLM 把 shell 命令错误传给 run_training
+    改进：
+    - 支持 working_dir，解决 cd && python 不可靠的问题。
+    - 改用 communicate(timeout=) 代替 readline() 轮询。
+    - stderr 单独捕获，traceback 不再丢失。
+    - 输出截断保留头尾。
+    - 失败时返回 ToolResponse.error（原来 return_code!=0 时也 success，
+      导致 agent 误以为成功）。
     """
 
-    def __init__(self, default_timeout: int = 600):
+    FORBIDDEN_PATTERNS = ["cat ", "type ", "more ", "less ", "tail ", "head "]
+
+    def __init__(self, default_timeout: int = DEFAULT_TIMEOUT):
         super().__init__(
             name="run_shell",
             description=(
-                "执行 Shell 命令（如 python result.py、pip install 等）并返回结果。"
-                "注意："
-                "1. shell 命令只能用于运行程序、安装依赖、执行系统命令；"
-                "2. 不允许使用 shell 查看文件内容（如 type、cat、more、less 等）；"
-                "3. 查看文件内容必须使用 smart_read_file 工具；"
-                "4. 若只是执行 Python 文件，请优先使用 run_training；"
-                "5. 若是完整 shell 命令（如 python result.py、pip install -r requirements.txt），才使用 run_shell。"
+                "执行 Shell 命令（如 python train.py、uv add torch、dir 等）。\n"
+                "禁止用于查看文件内容（cat/type/more 等），请改用 read_file。\n"
+                "若执行 Python 脚本，请优先使用 run_training（含指标解析）。"
             ),
         )
         self.default_timeout = default_timeout
@@ -487,172 +834,89 @@ class RunShellTool(Tool):
             ToolParameter(
                 name="command",
                 type="string",
-                description="要执行的 shell 命令，例如 python result.py",
+                description="要执行的 Shell 命令，例如 uv add scikit-learn",
                 required=True,
+            ),
+            ToolParameter(
+                name="working_dir",
+                type="string",
+                description="命令执行目录（可选），例如 C:\\acm\\AdoDAS2026-main",
+                required=False,
             ),
             ToolParameter(
                 name="timeout",
                 type="integer",
-                description="超时时间（秒）",
+                description=f"超时秒数，默认 {DEFAULT_TIMEOUT}",
                 required=False,
-                default=self.default_timeout,
+                default=DEFAULT_TIMEOUT,
             ),
         ]
 
     def run(self, parameters: Dict[str, Any]) -> ToolResponse:
-        command = parameters.get("command")
+        command = (parameters.get("command") or parameters.get("input") or "").strip()
 
-        if command is None:
-            command = parameters.get("input")
-
-        if not isinstance(command, str) or not command.strip():
+        if not command:
             return ToolResponse.error(
                 code=ToolErrorCode.INVALID_PARAM,
-                message=(
-                    "❌ 缺少参数 command（不能为空）\n\n"
-                    "示例：\n"
-                    "run_shell({'command': 'python result.py'})"
-                ),
+                message="❌ 缺少参数 command",
             )
 
-        command = command.strip()
-
-        # =========================
-        # 安全兜底：禁止用 shell 查看文件内容
-        # =========================
-        forbidden_patterns = [
-            "cat ",
-            "type ",
-            "more ",
-            "less ",
-            "tail ",
-            "head ",
-        ]
-
-        lower_command = command.lower()
-
-        for pattern in forbidden_patterns:
-            if pattern in lower_command:
+        lower_cmd = command.lower()
+        for pat in self.FORBIDDEN_PATTERNS:
+            if pat in lower_cmd:
                 return ToolResponse.error(
                     code=ToolErrorCode.INVALID_PARAM,
                     message=(
-                        "❌ 检测到你正在尝试使用 Shell 查看文件内容，这是被禁止的。\n\n"
-                        "请使用 smart_read_file 工具读取文件，而不是 run_shell。\n\n"
-                        "错误命令：\n"
-                        f"{command}\n\n"
-                        "正确示例：\n"
-                        "smart_read_file({\n"
-                        "    'base_path': 'D:\\\\project',\n"
-                        "    'file_name': 'train.py'\n"
-                        "})"
+                        f"❌ 禁止用 shell 查看文件内容（检测到：{pat.strip()}）。\n"
+                        "请改用 read_file 工具。"
                     ),
                 )
 
+        working_dir: Optional[str] = (parameters.get("working_dir") or "").strip() or None
+
         try:
-            timeout = int(
-                parameters.get("timeout", self.default_timeout)
-            )
+            timeout = int(parameters.get("timeout", self.default_timeout))
         except Exception:
             timeout = self.default_timeout
 
-        try:
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+        result = _run_subprocess(
+            command,
+            timeout=timeout,
+            cwd=working_dir,
+            shell=True,  # shell=True 支持管道、&&、环境变量展开等
+        )
+
+        output = result["output"] or "[无输出]"
+
+        lines = [
+            f"{'✅' if result['success'] else '❌'} Shell 命令{'成功' if result['success'] else '失败'}",
+            f"命令：{command}",
+            f"工作目录：{working_dir or '（默认）'}",
+            f"返回码：{result['return_code']}",
+        ]
+        if result.get("timed_out"):
+            lines.append(f"⚠️ 超时（{timeout}秒）")
+        lines.append("\n【输出】")
+        lines.append(output)
+
+        text = "\n".join(lines)
+
+        if result["success"]:
+            return ToolResponse.success(
+                text=text,
+                data={"command": command, "return_code": result["return_code"]},
             )
-
-            if process.stdout is None:
-                return ToolResponse.error(
-                    code=ToolErrorCode.EXECUTION_ERROR,
-                    message="❌ 执行异常：无法读取输出流",
-                )
-
-            all_output: List[str] = []
-            start = time.monotonic()
-
-            while True:
-                if time.monotonic() - start > timeout:
-                    process.kill()
-                    process.wait()
-
-                    return ToolResponse.error(
-                        code=ToolErrorCode.EXECUTION_ERROR,
-                        message=(
-                            "❌ Shell 命令执行超时（timeout）\n\n"
-                            f"命令：{command}\n"
-                            f"超时时间：{timeout} 秒"
-                        ),
-                    )
-
-                line = process.stdout.readline()
-
-                if line:
-                    print(line, end="", flush=True)
-                    all_output.append(line)
-
-                elif process.poll() is not None:
-                    break
-
-            return_code = process.wait()
-            output = "".join(all_output).strip()
-
-            # 输出兜底（防止空输出）
-            if not output:
-                output = "[命令执行完成，但没有输出内容]"
-
-            output = output[-3000:]  # 防止过长
-
-            # =========================
-            # 成功格式化输出
-            # =========================
-            if return_code == 0:
-                formatted_text = (
-                    "✅ Shell 命令执行成功\n\n"
-                    f"【执行命令】\n{command}\n\n"
-                    f"【返回码】\n{return_code}\n\n"
-                    f"【执行结果】\n{output}"
-                )
-
-                return ToolResponse.success(
-                    text=formatted_text,
-                    data={
-                        "command": command,
-                        "output": output,
-                        "return_code": return_code,
-                    },
-                )
-
-            # =========================
-            # 失败格式化输出
-            # =========================
+        else:
             return ToolResponse.error(
                 code=ToolErrorCode.EXECUTION_ERROR,
-                message=(
-                    "❌ Shell 命令执行失败\n\n"
-                    f"【执行命令】\n{command}\n\n"
-                    f"【返回码】\n{return_code}\n\n"
-                    f"【错误输出】\n{output}"
-                ),
-            )
-
-        except Exception as e:
-            return ToolResponse.error(
-                code=ToolErrorCode.INTERNAL_ERROR,
-                message=(
-                    "❌ 执行 Shell 命令失败\n\n"
-                    f"【执行命令】\n{command}\n\n"
-                    f"【异常信息】\n{str(e)}"
-                ),
+                message=text,
             )
 
 
-# =========================
-# 7. 对外导出
-# =========================
+# ══════════════════════════════════════════════════════════════
+# 对外导出
+# ══════════════════════════════════════════════════════════════
+
 write_file = WriteFileTool()
 run_training = RunTrainingTool()
 read_file = SmartReadFileTool()

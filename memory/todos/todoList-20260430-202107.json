@@ -1,0 +1,48 @@
+{
+  "summary": "",
+  "todos": [
+    {
+      "content": "验证训练管线能正常运行（GPU确认可用，特征数据存在）",
+      "status": "in_progress",
+      "created_at": "2026-04-30T20:21:07.740036",
+      "updated_at": "2026-04-30T20:21:07.740036"
+    },
+    {
+      "content": "用 baseline 配置跑通训练，获取初始 F1_cal",
+      "status": "pending",
+      "created_at": "2026-04-30T20:21:07.740036",
+      "updated_at": "2026-04-30T20:21:07.740036"
+    },
+    {
+      "content": "分析训练结果，制定优化策略",
+      "status": "pending",
+      "created_at": "2026-04-30T20:21:07.740036",
+      "updated_at": "2026-04-30T20:21:07.740036"
+    },
+    {
+      "content": "持续优化模型直到 F1_cal >= 0.3",
+      "status": "pending",
+      "created_at": "2026-04-30T20:21:07.740036",
+      "updated_at": "2026-04-30T20:21:07.740036"
+    },
+    {
+      "content": "记录最终结果和总结",
+      "status": "pending",
+      "created_at": "2026-04-30T20:21:07.740036",
+      "updated_at": "2026-04-30T20:21:07.740036"
+    },
+    {
+      "content": "将模型恢复到历史最优状态",
+      "status": "pending",
+      "created_at": "2026-04-30T20:21:07.740036",
+      "updated_at": "2026-04-30T20:21:07.740036"
+    }
+  ],
+  "created_at": "2026-04-30T20:21:07.740036",
+  "stats": {
+    "total": 6,
+    "completed": 0,
+    "in_progress": 1,
+    "pending": 5
+  }
+}
