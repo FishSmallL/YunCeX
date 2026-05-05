@@ -1,0 +1,48 @@
+{
+  "summary": "A1任务优化：在历史最优模型基础上训练优化，目标 F1_cal >= 0.47",
+  "todos": [
+    {
+      "content": "运行第一轮训练（50 epochs, batch_size=32, attention aggregator, tcn_layers=6）",
+      "status": "in_progress",
+      "created_at": "2026-05-03T01:57:56.888288",
+      "updated_at": "2026-05-03T01:57:56.888288"
+    },
+    {
+      "content": "分析训练结果，判断是否需要调整策略",
+      "status": "pending",
+      "created_at": "2026-05-03T01:57:56.888288",
+      "updated_at": "2026-05-03T01:57:56.888288"
+    },
+    {
+      "content": "根据结果优化模型参数并重新训练",
+      "status": "pending",
+      "created_at": "2026-05-03T01:57:56.888288",
+      "updated_at": "2026-05-03T01:57:56.888288"
+    },
+    {
+      "content": "持续迭代直到 F1_cal >= 0.47",
+      "status": "pending",
+      "created_at": "2026-05-03T01:57:56.888288",
+      "updated_at": "2026-05-03T01:57:56.888288"
+    },
+    {
+      "content": "记录最终结果和总结",
+      "status": "pending",
+      "created_at": "2026-05-03T01:57:56.888288",
+      "updated_at": "2026-05-03T01:57:56.888288"
+    },
+    {
+      "content": "确保模型恢复到历史最优状态",
+      "status": "pending",
+      "created_at": "2026-05-03T01:57:56.888288",
+      "updated_at": "2026-05-03T01:57:56.888288"
+    }
+  ],
+  "created_at": "2026-05-03T01:57:56.888288",
+  "stats": {
+    "total": 6,
+    "completed": 0,
+    "in_progress": 1,
+    "pending": 5
+  }
+}

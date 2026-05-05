@@ -1,50 +1,129 @@
-# config/policy.yaml
+# =============================================================
+# config/policy.yaml — Agent 访问控制策略（ACL）
+#
+# 规则说明：
+#   - 每个工具独立配置自己的 allow / deny 列表
+#   - deny 优先级始终高于 allow（黑名单优先）
+#   - 支持 glob 通配符：* 匹配单层，** 匹配任意层级
+#   - 规则从上到下按顺序匹配，命中第一条即停止
+#   - global.deny 对所有工具生效，优先级最高
+#   - 未命中任何规则时，走 default_action（默认 deny）
+# =============================================================
 
-# 项目根目录（可选，主要用于统一管理）
-project_root: C:\acm\AdoDAS2026-main
+# ------------------------------------------------------------------
+# 1. 全局设置
+# ------------------------------------------------------------------
+global:
+  # 未命中任何规则时的默认行为：deny | allow
+  default_action: deny
+
+  # 路径规范化：统一转换为绝对路径后再匹配
+  normalize_paths: true
+
+  # 是否记录审计日志
+  audit_log: true
+  audit_log_path: logs/policy_audit.log
+
+  # 全局黑名单：无论哪个工具，这些路径永远禁止
+  deny:
+    # 敏感配置
+    - "**/.env"
+    - "**/.env.*"
+    # 版本控制
+    - "**/.git/**"
+    # Python 字节码缓存
+    - "**/__pycache__/**"
+    # 虚拟环境
+    - "**/venv/**"
+    - "**/.venv/**"
+    - "**/site-packages/**"
+    - "**/Lib/**"
+    - "**/Scripts/**"
+    - "**/pyvenv.cfg"
+    # 敏感数据分区（业务特定）
+    - "D:/benchmark/audio/acm_mm_competition_2026/Train/train/SCH_002/**"
+    - "D:/benchmark/audio/acm_mm_competition_2026/Train/train/SCH_003/**"
+    - "D:/benchmark/audio/acm_mm_competition_2026/Train/val/SCH_002/**"
+    - "D:/benchmark/audio/acm_mm_competition_2026/Train/val/SCH_003/**"
 
 
-# =========================
-# 读取白名单（允许 read_file 访问）
-# =========================
-read_whitelist:
-  - Train
-  - common
-  - tasks
-  - models
-  - train.py
-  - infer.py
-  - README.md
-  - C:\acm\AdoDAS2026-main
-  - C:\acm\AdoDAS2026-main
-  - D:\benchmark\audio\acm_mm_competition_2026
-# =========================
-# 写入白名单（允许 write_file 修改）
-# 注意：写权限一定比读权限更严格
-# =========================
-write_whitelist:
-  - models
-  - tasks
-  - output
-  - result.py
-  - C:\acm\AdoDAS2026-main
+# ------------------------------------------------------------------
+# 2. 工具级 ACL（每个工具独立配置）
+#    结构：
+#      tools.<tool_name>:
+#        deny:  [...] # 工具级黑名单，优先于 allow
+#        allow: [...] # 工具级白名单
+# ------------------------------------------------------------------
+tools:
 
-# =========================
-# 黑名单（无论读写都禁止）
-# 黑名单优先级最高
-# =========================
-blacklist:
-  - .env
-  - .git
-  - __pycache__
-  - checkpoints
-  - venv
-  - .venv
-  - site-packages
-  - Lib
-  - Scripts
-  - pyvenv.cfg
-  - D:\benchmark\audio\acm_mm_competition_2026\Train\train\SCH_002
-  - D:\benchmark\audio\acm_mm_competition_2026\Train\train\SCH_003
-  - D:\benchmark\audio\acm_mm_competition_2026\Train\val\SCH_002
-  - D:\benchmark\audio\acm_mm_competition_2026\Train\val\SCH_003
+  # ── read_file ────────────────────────────────────────────────
+  read_file:
+    deny:
+      # 禁止读取任何密钥 / 证书文件
+      - "**/*.pem"
+      - "**/*.key"
+      - "**/*.p12"
+      - "**/*.pfx"
+      # 禁止读取系统敏感目录
+      - "C:/Windows/**"
+      - "C:/Users/*/AppData/**"
+    allow:
+      # 项目源码
+      - "C:/acm/AdoDAS2026-main/**"
+      # 数据集根目录
+      - "D:/benchmark/audio/acm_mm_competition_2026/**"
+
+  # ── write_file ───────────────────────────────────────────────
+  write_file:
+    deny:
+      # 禁止覆盖训练数据集原始文件
+      - "D:/benchmark/audio/acm_mm_competition_2026/data_set/**"
+      - "D:/benchmark/audio/acm_mm_competition_2026/Train/**"
+      # 禁止写入推理脚本以外的根目录文件（避免误覆盖配置）
+      - "C:/acm/AdoDAS2026-main/*.yaml"
+      - "C:/acm/AdoDAS2026-main/*.yml"
+      - "C:/acm/AdoDAS2026-main/*.toml"
+    allow:
+      # 只允许写项目内的 models / tasks / output 子目录，以及 result.py
+      - "C:/acm/AdoDAS2026-main/models/**"
+      - "C:/acm/AdoDAS2026-main/tasks/**"
+      - "C:/acm/AdoDAS2026-main/output/**"
+      - "C:/acm/AdoDAS2026-main/result.py"
+      # 允许写训练日志
+      - "C:/acm/AdoDAS2026-main/logs/**"
+
+  # ── run_training ─────────────────────────────────────────────
+  run_training:
+    deny:
+      # 禁止直接执行推理脚本（防止误触发提交）
+      - "**/infer.py"
+      - "**/submit.py"
+      - "**/upload.py"
+    allow:
+      # 只允许跑项目内的训练脚本
+      - "C:/acm/AdoDAS2026-main/**/*.py"
+
+  # ── run_shell ────────────────────────────────────────────────
+  run_shell:
+    deny:
+      # 禁止执行危险命令（command 级别过滤）
+      - "rm -rf *"
+      - "del /f /s /q *"
+      - "format *"
+      - "shutdown*"
+      - "net user*"
+      - "reg delete*"
+      # 禁止访问敏感目录的 shell 操作
+      - "*AppData*"
+      - "* .env *"
+    allow:
+      # 包管理（uv only）
+      - "uv *"
+      # Python 执行（限项目目录）
+      - "python C:/acm/AdoDAS2026-main/**"
+      - "cd C:/acm/AdoDAS2026-main* && python*"
+      # 系统信息类（只读）
+      - "dir *"
+      - "nvidia-smi*"
+      - "where *"
+      - "echo *"

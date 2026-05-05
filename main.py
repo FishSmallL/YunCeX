@@ -1,4 +1,12 @@
+import sys
 from dotenv import load_dotenv
+
+# Windows 控制台默认编码可能无法输出 emoji，启动时切换为 utf-8
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
 
 from hello_agents import ReActAgent
 from hello_agents import HelloAgentsLLM
@@ -15,8 +23,8 @@ llm = HelloAgentsLLM()          # 从环境变量读取全部配置
 
 task = (
     "使用工具read_file来读D:\\benchmark\\audio\\acm_mm_competition_2026下的文件，"
-    "只去了解A1任务和完成A1任务，要用GPU跑通模型，然后持续有技巧地优化模型，然后训练模型看效果，直到F1_cal达到0.3以上。"
-    "只要达到0.3以上就停止，不需要追求更高的分数。然后进行记录和总结。" \
+    "只去了解A1任务和完成A1任务，在历史最有潜力的模型基础上进行优化，要用GPU跑通模型，然后持续有技巧地优化模型，然后训练模型看效果，直到F1_cal达到0.47以上。"
+    "只要达到0.47以上就停止，不需要追求更高的分数。然后进行记录和总结。" \
     "最后，你要把模型恢复到历史最优状态，如果此次就是历史最优就把模型变为此次状态"
 )
 
@@ -42,16 +50,16 @@ executor = ReActAgent(
 
         "你的核心目标：\n"
         "确保代码能够成功运行并产出结果。"
-        "必须使用 GPU 成功跑通 baseline，反复优化模型、训练模型，直到F1_cal达到0.3及以上为止，完成 A1 目标。\n"
+        "要从历史最有潜力的模型的基础上进行优化跑模型和优化。"
+        "必须使用 GPU 成功跑通模型，反复优化模型、训练模型，直到F1_cal达到0.47及以上为止，完成 A1 目标。\n"
         "当你在训练过程中遇到训练越来越差的情况时，必须停下来及时调整策略。\n"
         "在完成 A1 目标后，进行结果记录和总结。一定要记录下来以供以后参考。\n\n"
 
         "项目路径信息（必须牢记）：\n"
         "1. 项目代码根目录：C:\\acm\\AdoDAS2026-main\n"
-        "2. 数据集根目录：D:\\benchmark\\audio\\acm_mm_competition_2026\\Train\n"
-        "3. 训练集路径：D:\\benchmark\\audio\\acm_mm_competition_2026\\Train\\train\n"
-        "4. 验证集路径：D:\\benchmark\\audio\\acm_mm_competition_2026\\Train\\val\n"
-        "5. CSV 文件路径：D:\\benchmark\\audio\\acm_mm_competition_2026\\Train\\manifests_sch002_sch003\n\n"
+        "2. 数据集路径：D:\\benchmark\\audio\\acm_mm_competition_2026\\data_set\\data_set\n"
+        "3. 训练集 CSV 文件路径：D:\\benchmark\\audio\\acm_mm_competition_2026\\data_set\\train.csv\n"
+        "4. 测试集 CSV 文件路径：D:\\benchmark\\audio\\acm_mm_competition_2026\\data_set\\val.csv\n\n"
 
         "工具使用规则（必须严格遵守）：\n"
         "【读取目录结构 / 查看文件内容】必须使用 read_file 工具。\n"
@@ -84,7 +92,7 @@ executor = ReActAgent(
         "你的工作风格：\n"
         "像高级算法工程师一样行动：先判断、再读取、再修改、再验证，严禁无目的试错。"
     ),
-    max_steps=100,
+    max_steps=150,
 )
 
 executor.add_tool(write_file)

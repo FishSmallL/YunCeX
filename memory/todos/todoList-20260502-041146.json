@@ -1,0 +1,36 @@
+{
+  "summary": "Baseline F1_cal=0.30. Need 0.47. Adding auxiliary features and better models.",
+  "todos": [
+    {
+      "content": "Run train_a1_optimized.py as baseline to see current F1_cal",
+      "status": "completed",
+      "created_at": "2026-05-02T04:11:46.882106",
+      "updated_at": "2026-05-02T04:11:46.882106"
+    },
+    {
+      "content": "Create improved training script with auxiliary features + better models",
+      "status": "in_progress",
+      "created_at": "2026-05-02T04:11:46.882106",
+      "updated_at": "2026-05-02T04:11:46.882106"
+    },
+    {
+      "content": "Train and evaluate until F1_cal >= 0.47",
+      "status": "pending",
+      "created_at": "2026-05-02T04:11:46.882106",
+      "updated_at": "2026-05-02T04:11:46.882106"
+    },
+    {
+      "content": "Record results and save best model",
+      "status": "pending",
+      "created_at": "2026-05-02T04:11:46.882106",
+      "updated_at": "2026-05-02T04:11:46.882106"
+    }
+  ],
+  "created_at": "2026-05-02T04:11:46.882106",
+  "stats": {
+    "total": 4,
+    "completed": 1,
+    "in_progress": 1,
+    "pending": 2
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "summary": "",
+  "todos": [
+    {
+      "content": "分析历史最优模型和基线",
+      "status": "completed",
+      "created_at": "2026-05-01T16:26:14.685422",
+      "updated_at": "2026-05-01T16:26:14.685422"
+    },
+    {
+      "content": "运行simple_a1_train.py获取egemaps基线",
+      "status": "completed",
+      "created_at": "2026-05-01T16:26:14.685422",
+      "updated_at": "2026-05-01T16:26:14.685422"
+    },
+    {
+      "content": "尝试v14-v17多模态模型优化",
+      "status": "completed",
+      "created_at": "2026-05-01T16:26:14.685422",
+      "updated_at": "2026-05-01T16:26:14.685422"
+    },
+    {
+      "content": "尝试简单MLP+集成方法",
+      "status": "completed",
+      "created_at": "2026-05-01T16:26:14.685422",
+      "updated_at": "2026-05-01T16:26:14.685422"
+    },
+    {
+      "content": "训练v18(最终尝试): pos_weight=ratio*1.5 + bias_init_zero",
+      "status": "in_progress",
+      "created_at": "2026-05-01T16:26:14.685422",
+      "updated_at": "2026-05-01T16:26:14.685422"
+    },
+    {
+      "content": "记录结果并总结，恢复代码到原始状态",
+      "status": "pending",
+      "created_at": "2026-05-01T16:26:14.685422",
+      "updated_at": "2026-05-01T16:26:14.685422"
+    }
+  ],
+  "created_at": "2026-05-01T16:26:14.691495",
+  "stats": {
+    "total": 6,
+    "completed": 4,
+    "in_progress": 1,
+    "pending": 1
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "summary": "完成 A1 任务：在历史最优模型基础上优化，GPU 训练，F1_cal 达到 0.4+",
+  "todos": [
+    {
+      "content": "读取项目结构和 A1 任务说明",
+      "status": "in_progress",
+      "created_at": "2026-05-02T02:56:27.931543",
+      "updated_at": "2026-05-02T02:56:27.931543"
+    },
+    {
+      "content": "找到历史最有潜力/最优的模型",
+      "status": "pending",
+      "created_at": "2026-05-02T02:56:27.931543",
+      "updated_at": "2026-05-02T02:56:27.931543"
+    },
+    {
+      "content": "确保 GPU 可用并跑通基线训练",
+      "status": "pending",
+      "created_at": "2026-05-02T02:56:27.931543",
+      "updated_at": "2026-05-02T02:56:27.931543"
+    },
+    {
+      "content": "持续优化模型直至 F1_cal >= 0.4",
+      "status": "pending",
+      "created_at": "2026-05-02T02:56:27.931543",
+      "updated_at": "2026-05-02T02:56:27.931543"
+    },
+    {
+      "content": "记录结果并总结",
+      "status": "pending",
+      "created_at": "2026-05-02T02:56:27.931543",
+      "updated_at": "2026-05-02T02:56:27.931543"
+    },
+    {
+      "content": "恢复模型至历史最优状态",
+      "status": "pending",
+      "created_at": "2026-05-02T02:56:27.931543",
+      "updated_at": "2026-05-02T02:56:27.931543"
+    }
+  ],
+  "created_at": "2026-05-02T02:56:27.931543",
+  "stats": {
+    "total": 6,
+    "completed": 0,
+    "in_progress": 1,
+    "pending": 5
+  }
+}
