@@ -53,7 +53,7 @@ def _normalize(raw: str, normalize: bool) -> str:
     对 run_shell 的命令字符串不做路径解析，直接小写归一化。
     """
     if not normalize:
-        return raw
+        return raw.replace("\\", "/").lower()
     try:
         return str(Path(raw).resolve()).replace("\\", "/")
     except Exception:
@@ -164,7 +164,8 @@ class PathPolicy:
         检查 `tool` 对 `target`（路径或命令）的操作是否被允许。
         返回 True = 允许，False = 拒绝。
         """
-        normalized = _normalize(target, self._normalize)
+        normalize_target = self._normalize if tool != "run_shell" else False
+        normalized = _normalize(target, normalize_target)
         action, matched_rule, stage = self._evaluate(tool, normalized)
         allowed = (action == "allow")
 

@@ -25,9 +25,9 @@ memory_block = mm.build_memory_block()
 llm = HelloAgentsLLM()
 
 _base_task = (
-    "使用工具read_file来读D:\\benchmark\\audio\\acm_mm_competition_2026下的文件，"
-    "只去了解A1任务和完成A1任务，在历史最有潜力的模型基础上进行优化，要用GPU跑通模型，然后持续有技巧地优化模型，然后训练模型看效果，直到F1_cal达到0.47以上。"
-    "只要达到0.47以上就停止，不需要追求更高的分数。然后进行记录和总结。"
+    "使用工具read_file来读D:\\benchmark\\audio\\acm_mm_competition_2026\\data_set\\data_set下的文件，"
+    "只去了解A1任务和完成A1任务，在历史最有潜力的模型基础上进行优化，要用GPU跑通模型，然后持续有技巧地优化模型，然后训练模型看效果，直到F1_cal达到0.7以上。"
+    "只要达到0.7以上就停止，不需要追求更高的分数。然后进行记录和总结。"
     "最后，你要把模型恢复到历史最优状态，如果此次就是历史最优就把模型变为此次状态"
 )
 
@@ -54,14 +54,14 @@ executor = ReActAgent(
         "你的核心目标：\n"
         "确保代码能够成功运行并产出结果。"
         "要从历史最有潜力的模型的基础上进行优化跑模型和优化。"
-        "必须使用 GPU 成功跑通模型，反复优化模型、训练模型，直到F1_cal达到0.47及以上为止，完成 A1 目标。\n"
+        "必须使用 GPU 成功跑通模型，反复优化模型、训练模型，直到F1_cal达到0.7及以上为止，完成 A1 目标。\n"
         "在完成 A1 目标后，进行结果记录和总结。一定要记录下来以供以后参考。\n\n"
 
         "项目路径信息（必须牢记）：\n"
         "1. 项目代码根目录：C:\\acm\\AdoDAS2026-main\n"
         "2. 数据集路径：D:\\benchmark\\audio\\acm_mm_competition_2026\\data_set\\data_set\n"
-        "3. 训练集 CSV 文件路径：D:\\benchmark\\audio\\acm_mm_competition_2026\\data_set\\train.csv\n"
-        "4. 测试集 CSV 文件路径：D:\\benchmark\\audio\\acm_mm_competition_2026\\data_set\\val.csv\n\n"
+        "3. 训练集 CSV 文件路径：D:\\benchmark\\audio\\acm_mm_competition_2026\\data_set\\data_set\\manifests_subset\\train.csv\n"
+        "4. 验证集 CSV 文件路径：D:\\benchmark\\audio\\acm_mm_competition_2026\\data_set\\data_set\\manifests_subset\\val.csv\n"
 
         "工具使用规则（必须严格遵守）：\n"
         "【读取目录结构 / 查看文件内容】必须使用 read_file 工具。\n"
@@ -110,11 +110,12 @@ executor = ReActAgent(
         "6. 训练时候要保证设置的Timeout足够长，避免因为训练时间过短导致的训练失败；\n"
         "7. 重中之重，硬性要求，所有训练必须使用 GPU，要确保训练使用 GPU，才进行训练；\n"
         "8. 必须向用户持续展示训练进度（包括进度条 / epoch 输出 / accuracy 变化）；\n"
-        "9. 不需要理解数据集业务含义，只需要围绕任务目标完成训练与优化。\n\n"
+        "9. 不需要理解数据集业务含义，只需要围绕任务目标完成训练与优化；\n"
+        "10. 如果需要调参时就使用 optuna 库来帮助指导超参数选择和调优。\n\n"
 
         "你的工作风格：\n"
         "像高级算法工程师一样行动：先判断、再读取、再修改、再验证，严禁无目的试错。\n"
-        "修改前保存，失败后回滚，每次改动都有明确理由。"
+        "修改前保存，失败后回滚，每次改动都有明确理由，每次改动前查看文件 long_term_memory.json 以获取历史信息和改进经验。"
     ),
     max_steps=150,
 )

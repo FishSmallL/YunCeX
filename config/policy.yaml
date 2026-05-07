@@ -40,12 +40,7 @@ global:
     - "**/Lib/**"
     - "**/Scripts/**"
     - "**/pyvenv.cfg"
-    # 敏感数据分区（业务特定）
-    - "D:/benchmark/audio/acm_mm_competition_2026/Train/train/SCH_002/**"
-    - "D:/benchmark/audio/acm_mm_competition_2026/Train/train/SCH_003/**"
-    - "D:/benchmark/audio/acm_mm_competition_2026/Train/val/SCH_002/**"
-    - "D:/benchmark/audio/acm_mm_competition_2026/Train/val/SCH_003/**"
-
+    # 敏感数据分区（业务特定）- 已移除数据集根目录限制，允许训练读取数据
 
 # ------------------------------------------------------------------
 # 2. 工具级 ACL（每个工具独立配置）
@@ -91,6 +86,10 @@ tools:
       - "C:/acm/AdoDAS2026-main/result.py"
       # 允许写训练日志
       - "C:/acm/AdoDAS2026-main/logs/**"
+      # 允许写 Python 脚本到项目目录
+      - "C:/acm/AdoDAS2026-main/**/*.py"
+      - "C:/acm/AdoDAS2026-main/*.py"
+      
 
   # ── run_training ─────────────────────────────────────────────
   run_training:
@@ -101,6 +100,8 @@ tools:
       - "**/upload.py"
     allow:
       # 只允许跑项目内的训练脚本
+      - "C:/acm/AdoDAS2026-main/**"
+      - "C:/acm/AdoDAS2026-main/*.py"
       - "C:/acm/AdoDAS2026-main/**/*.py"
 
   # ── run_shell ────────────────────────────────────────────────
@@ -117,13 +118,33 @@ tools:
       - "*AppData*"
       - "* .env *"
     allow:
-      # 包管理（uv only）
-      - "uv *"
-      # Python 执行（限项目目录）
+      # 包管理
+      - "**/uv *"
+      - "**/uv --version"
+      # 只允许执行项目目录下的 Python 脚本
       - "python C:/acm/AdoDAS2026-main/**"
-      - "cd C:/acm/AdoDAS2026-main* && python*"
-      # 系统信息类（只读）
+      - "python \"C:/acm/AdoDAS2026-main/**\""
+      - "python C:/acm/AdoDAS2026-main/** *"
+      - "python \"C:/acm/AdoDAS2026-main/**\" *"
+      - "python.exe C:/acm/AdoDAS2026-main/**"
+      - "python.exe \"C:/acm/AdoDAS2026-main/**\""
+      - "python.exe C:/acm/AdoDAS2026-main/** *"
+      - "python.exe \"C:/acm/AdoDAS2026-main/**\" *"
+      - "cd ** && python C:/acm/AdoDAS2026-main/**"
+      - "cd ** && python \"C:/acm/AdoDAS2026-main/**\""
+      - "cd ** && python C:/acm/AdoDAS2026-main/** *"
+      - "cd ** && python \"C:/acm/AdoDAS2026-main/**\" *"
+      - "cd ** && python.exe C:/acm/AdoDAS2026-main/**"
+      - "cd ** && python.exe \"C:/acm/AdoDAS2026-main/**\""
+      - "cd ** && python.exe C:/acm/AdoDAS2026-main/** *"
+      - "cd ** && python.exe \"C:/acm/AdoDAS2026-main/**\" *"
+      # 文件/目录检查
       - "dir *"
-      - "nvidia-smi*"
-      - "where *"
+      - "type *"
       - "echo *"
+      - "findstr *"
+      - "where *"
+      - "Get-ChildItem*"
+      - "for /d *"
+      # 系统工具
+      - "nvidia-smi*"

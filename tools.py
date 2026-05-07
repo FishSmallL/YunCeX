@@ -5,6 +5,7 @@ tools.py — Agent 工具类
 
 import subprocess
 import os
+import threading
 from typing import Dict, Any
 
 from policy import policy  # 统一从策略单例鉴权
@@ -148,22 +149,43 @@ class RunTrainingTool(Tool):
             )
 
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 ["python", script_path],
                 cwd=PROJECT_ROOT,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=int(timeout),
+                bufsize=1,
+                universal_newlines=True,
             )
-            output = result.stdout + result.stderr
+
+            output_lines = []
+
+            def _reader():
+                if process.stdout is None:
+                    return
+                for line in process.stdout:
+                    print(line, end="", flush=True)
+                    output_lines.append(line)
+
+            reader_thread = threading.Thread(target=_reader, daemon=True)
+            reader_thread.start()
+
+            try:
+                process.wait(timeout=int(timeout))
+            except subprocess.TimeoutExpired:
+                process.kill()
+                reader_thread.join(timeout=1)
+                return ToolResponse.error(
+                    code=ToolErrorCode.TIMEOUT,
+                    message=f"训练超时（{timeout}s）"
+                )
+
+            reader_thread.join(timeout=1)
+            output = "".join(output_lines)
             return ToolResponse.success(
                 text=output or "训练完成（无输出）",
-                data={"returncode": result.returncode, "output": output}
-            )
-        except subprocess.TimeoutExpired:
-            return ToolResponse.error(
-                code=ToolErrorCode.TIMEOUT,
-                message=f"训练超时（{timeout}s）"
+                data={"returncode": process.returncode, "output": output}
             )
         except Exception as e:
             return ToolResponse.error(
