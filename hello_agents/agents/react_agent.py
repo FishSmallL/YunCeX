@@ -85,8 +85,14 @@ class ReActAgent(Agent):
         self._builtin_tools = {"Thought", "Finish"}
     
     def add_tool(self, tool):
-        """添加工具到工具注册表"""
-        self.tool_registry.register_tool(tool)
+        """添加工具到工具注册表（兼容 Tool 对象和普通函数）"""
+        from ..tools.base import Tool as BaseTool
+        if isinstance(tool, BaseTool):
+            self.tool_registry.register_tool(tool)
+        elif callable(tool):
+            self.tool_registry.register_function(tool)
+        else:
+            raise TypeError(f"add_tool 不支持的类型: {type(tool)}，请传入 Tool 对象或普通函数")
     
     def run(self, input_text: str, **kwargs) -> str:
         """
@@ -914,14 +920,26 @@ class ReActAgent(Agent):
 
                     print(f"🎬 调用工具: {tool_name}({arguments})")
 
-                    # 异步执行工具
+                    # 异步执行工具（优先 Tool 对象，其次函数工具）
                     tool = self.tool_registry.get_tool(tool_name)
-                    if not tool:
+                    func = None if tool else self.tool_registry.get_function(tool_name)
+
+                    if not tool and not func:
                         result_content = f"❌ 工具 {tool_name} 不存在"
                     else:
                         try:
-                            tool_response = await tool.arun_with_timing(arguments)
-                            result_content = tool_response.text
+                            if func:
+                                import asyncio as _asyncio
+                                import json as _json
+                                arg_str = _json.dumps(arguments, ensure_ascii=False)
+                                result_content = str(
+                                    await _asyncio.get_event_loop().run_in_executor(
+                                        None, func, arg_str
+                                    )
+                                )
+                            else:
+                                tool_response = await tool.arun_with_timing(arguments)
+                                result_content = tool_response.text
 
                             # 应用截断
                             truncate_result = self.truncator.truncate(
@@ -1341,17 +1359,28 @@ class ReActAgent(Agent):
 
                     print(f"🔧 调用工具: {tool_name}({arguments})")
 
-                    # 获取工具
+                    # 获取工具（优先 Tool 对象，其次函数工具）
                     tool = self.tool_registry.get_tool(tool_name)
+                    func = None if tool else self.tool_registry.get_function(tool_name)
 
-                    if not tool:
+                    if not tool and not func:
                         result_content = f"❌ 工具 {tool_name} 不存在"
 
                     else:
                         try:
-                            # 异步执行工具
-                            tool_response = await tool.arun_with_timing(arguments)
-                            result_content = tool_response.text
+                            if func:
+                                # 函数工具：同步调用包装为异步
+                                import asyncio as _asyncio
+                                import json as _json
+                                arg_str = _json.dumps(arguments, ensure_ascii=False)
+                                tool_response_text = await _asyncio.get_event_loop().run_in_executor(
+                                    None, func, arg_str
+                                )
+                                result_content = str(tool_response_text)
+                            else:
+                                # 异步执行 Tool 对象
+                                tool_response = await tool.arun_with_timing(arguments)
+                                result_content = tool_response.text
 
                             # 输出截断（防止超长）
                             truncate_result = self.truncator.truncate(
