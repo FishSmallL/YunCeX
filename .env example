@@ -1,0 +1,7 @@
+#.env file
+LLM_TIMEOUT=3600
+
+#deepseek
+LLM_API_KEY=
+LLM_MODEL_ID=deepseek-v4-pro
+LLM_BASE_URL=https://api.deepseek.com
