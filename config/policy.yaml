@@ -8,6 +8,15 @@
 #   - 规则从上到下按顺序匹配，命中第一条即停止
 #   - global.deny 对所有工具生效，优先级最高
 #   - 未命中任何规则时，走 default_action（默认 deny）
+# Linux 安全部署策略：
+#   - 数据集目录 /Dataset/acmmm_datasets/ 只读；
+#   - Agent 可操作目录限定为 /home/yezhong/ACMMM2026/；
+#   - 默认拒绝（fail-closed），只对白名单命中的路径/命令放行；
+#   - deny 优先级始终高于 allow。
+#
+# 注意：run_shell 当前按“命令字符串”做 glob 匹配，并非真正的 OS 沙箱。
+# 生产环境仍建议配合容器 / chroot / mount namespace / AppArmor / SELinux 等
+# 系统级隔离，防止 shell 语法绕过。
 # =============================================================
 
 # ------------------------------------------------------------------
@@ -25,15 +34,32 @@ global:
   audit_log_path: logs/policy_audit.log
 
   # 全局黑名单：无论哪个工具，这些路径永远禁止
+  # 全局黑名单：无论哪个工具，这些路径/命令永远禁止
   deny:
     # 敏感配置
+    # 敏感配置、密钥、证书
     - "**/.env"
     - "**/.env.*"
     # 版本控制
+    - "**/*_rsa"
+    - "**/*_dsa"
+    - "**/*_ecdsa"
+    - "**/*_ed25519"
+    - "**/*.pem"
+    - "**/*.key"
+    - "**/*.p12"
+    - "**/*.pfx"
+    - "**/*.crt"
+    - "**/*.cer"
+    - "**/*.kdbx"
+
+    # 版本控制与缓存/依赖目录
     - "**/.git/**"
     # Python 字节码缓存
     - "**/__pycache__/**"
     # 虚拟环境
+    - "**/.pytest_cache/**"
+    - "**/.mypy_cache/**"
     - "**/venv/**"
     - "**/.venv/**"
     - "**/site-packages/**"
@@ -41,6 +67,43 @@ global:
     - "**/Scripts/**"
     - "**/pyvenv.cfg"
     # 敏感数据分区（业务特定）- 已移除数据集根目录限制，允许训练读取数据
+
+    # Linux 系统与用户敏感目录（路径型工具）
+    - "/etc/**"
+    - "/root/**"
+    - "/boot/**"
+    - "/dev/**"
+    - "/proc/**"
+    - "/sys/**"
+    - "/run/**"
+    - "/var/log/**"
+    - "/var/lib/**"
+    - "/tmp/**"
+    - "/home/*/.ssh/**"
+    - "/home/*/.gnupg/**"
+    - "/home/*/.aws/**"
+    - "/home/*/.azure/**"
+    - "/home/*/.config/**"
+    - "/home/*/.local/share/**"
+    - "/home/*/.cache/**"
+
+    # Path Traversal
+    - "*../*"
+    - "*/../*"
+    - "* .. *"
+
+    - "/home/*/.bashrc"
+    - "/home/*/.bash_profile"
+    - "/home/*/.bash_history"
+    - "/home/*/.profile"
+    - "/home/*/.zshrc"
+    - "/home/*/.zsh_history"
+    - "/home/*/.netrc"           # 存储明文凭据
+    - "/home/*/.gitconfig"       # 可能含 token
+    - "/home/*/.docker/**"       # Docker 凭据
+    - "/home/*/.kube/**"         # Kubernetes 凭据
+    - "/home/*/.npmrc"           # npm token
+    - "/home/*/.pypirc"          # PyPI 密码
 
 # ------------------------------------------------------------------
 # 2. 工具级 ACL（每个工具独立配置）
@@ -62,82 +125,190 @@ tools:
       # 禁止读取系统敏感目录
       - "C:/Windows/**"
       - "C:/Users/*/AppData/**"
+      # 数据集只能读取，仍禁止读取隐藏/凭据类文件
+      - "/Dataset/acmmm_datasets/**/.env"
+      - "/Dataset/acmmm_datasets/**/.env.*"
+      - "/Dataset/acmmm_datasets/**/*.pem"
+      - "/Dataset/acmmm_datasets/**/*.key"
+      - "/Dataset/acmmm_datasets/**/*.p12"
+      - "/Dataset/acmmm_datasets/**/*.pfx"
     allow:
       # 项目源码
-      - "C:/acm/AdoDAS2026-main/**"
+      - "/home/yezhong/ACMMM2026/**"
       # 数据集根目录
-      - "D:/benchmark/audio/acm_mm_competition_2026/**"
+      - "/Dataset/acmmm_datasets/**"
+      # Agent 工作区可读，用于读取/检查自己的代码、配置和产物
+      - "/home/yezhong/ACMMM2026/**"
+      # 数据集目录只读
+      - "/Dataset/acmmm_datasets/**"
 
   # ── write_file ───────────────────────────────────────────────
   write_file:
     deny:
       # 禁止覆盖训练数据集原始文件
-      - "D:/benchmark/audio/acm_mm_competition_2026/data_set/**"
-      - "D:/benchmark/audio/acm_mm_competition_2026/Train/**"
+      - "/Dataset/acmmm_datasets/data_set/**"
+      - "/Dataset/acmmm_datasets/Train/**"
       # 禁止写入推理脚本以外的根目录文件（避免误覆盖配置）
-      - "C:/acm/AdoDAS2026-main/*.yaml"
-      - "C:/acm/AdoDAS2026-main/*.yml"
-      - "C:/acm/AdoDAS2026-main/*.toml"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main/*.yaml"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main/*.yml"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main/*.toml"
+      # 数据集绝对禁止写入、覆盖或删除
+      - "/Dataset/acmmm_datasets/**"
+      # 防止写入工作区内的隐藏凭据目录/文件
+      - "/home/yezhong/ACMMM2026/**/.env"
+      - "/home/yezhong/ACMMM2026/**/.env.*"
+      - "/home/yezhong/ACMMM2026/**/.ssh/**"
+      - "/home/yezhong/ACMMM2026/**/.gnupg/**"
+      - "/home/yezhong/ACMMM2026/**/*.pem"
+      - "/home/yezhong/ACMMM2026/**/*.key"
+      - "/home/yezhong/ACMMM2026/**/*.p12"
+      - "/home/yezhong/ACMMM2026/**/*.pfx"
     allow:
       # 只允许写项目内的 models / tasks / output 子目录，以及 result.py
-      - "C:/acm/AdoDAS2026-main/models/**"
-      - "C:/acm/AdoDAS2026-main/tasks/**"
-      - "C:/acm/AdoDAS2026-main/output/**"
-      - "C:/acm/AdoDAS2026-main/result.py"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main/models/**"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main/tasks/**"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main/output/**"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main/result.py"
       # 允许写训练日志
-      - "C:/acm/AdoDAS2026-main/logs/**"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main/logs/**"
       # 允许写 Python 脚本到项目目录
-      - "C:/acm/AdoDAS2026-main/**/*.py"
-      - "C:/acm/AdoDAS2026-main/*.py"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main/*.py"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main/*.py"
       
+      # 只允许在 Agent 工作区内写入
+      - "/home/yezhong/ACMMM2026/**"
 
   # ── run_training ─────────────────────────────────────────────
   run_training:
     deny:
       # 禁止直接执行推理脚本（防止误触发提交）
+      # 禁止直接执行提交/上传/破坏性脚本
       - "**/infer.py"
       - "**/submit.py"
       - "**/upload.py"
+      - "**/delete*.py"
+      - "**/remove*.py"
+      # 数据集不可执行
+      - "/Dataset/acmmm_datasets/**"
     allow:
       # 只允许跑项目内的训练脚本
-      - "C:/acm/AdoDAS2026-main/**"
-      - "C:/acm/AdoDAS2026-main/*.py"
-      - "C:/acm/AdoDAS2026-main/**/*.py"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main"
+      - "/home/yezhong/ACMMM2026/AdoDAS2026-main/*.py"
+      # 只允许执行 Agent 工作区内脚本
+      - "/home/yezhong/ACMMM2026/**"
+      - "/home/yezhong/ACMMM2026/*.py"
+      - "/home/yezhong/ACMMM2026/**/*.py"
 
   # ── run_shell ────────────────────────────────────────────────
+  # 当前实现对 shell 命令只做字符串匹配；这里采用强约束白名单，
+  # 避免开放 rm/cp/cat 等可轻易越界读写删的通用命令。
   run_shell:
     deny:
       # 禁止执行危险命令（command 级别过滤）
+      # 破坏性命令
+      - "rm *"
+      - "rm -r *"
       - "rm -rf *"
       - "del /f /s /q *"
       - "format *"
+      - "rmdir *"
+      - "mv *"
+      - "cp *"
+      - "chmod *"
+      - "chown *"
+      - "dd *"
+      - "mkfs*"
+      - "mount *"
+      - "umount *"
+      - "sudo *"
+      - "su *"
       - "shutdown*"
       - "net user*"
       - "reg delete*"
       # 禁止访问敏感目录的 shell 操作
       - "*AppData*"
       - "* .env *"
+      - "reboot*"
+      - "kill *"
+      - "pkill *"
+      - "curl *"
+      - "wget *"
+      - "scp *"
+      - "rsync *"
+      - "ssh *"
+
+      # shell 重定向/管道/命令拼接，防止绕过路径白名单
+      - "*>*"
+      - "*<*"
+      - "*|*"
+      - "*&*"
+      - "*;*"
+      - "*`*"
+      - "*$(*"
+
+      # 命令中出现系统/私人敏感路径即拒绝
+      - "*/etc/*"
+      - "*/root/*"
+      - "*/boot/*"
+      - "*/dev/*"
+      - "*/proc/*"
+      - "*/sys/*"
+      - "*/run/*"
+      - "*/var/log/*"
+      - "*/var/lib/*"
+      - "*/home/*/.ssh/*"
+      - "*/home/*/.gnupg/*"
+      - "*/home/*/.aws/*"
+      - "*/home/*/.azure/*"
+      - "*/home/*/.config/*"
+      - "*/home/*/.local/share/*"
+      - "*/home/*/.cache/*"
+      - "*.env*"
+      - "*.pem*"
+      - "*.key*"
+      - "*.p12*"
+      - "*.pfx*"
+
+      - "cat *"
+      - "head *"
+      - "tail *"
+      - "less *"
+      - "more *"
+      - "grep *"
+      - "awk *"
+      - "sed *"
+      - "env"
+      - "printenv"
+      - "export *"
+      - "python* -c *"   # 禁止内联代码执行
+      - "python3* -c *"
+      
+      # Path Traversal
+      - "*../*"
+      - "*/../*"
+      - "* .. *"
+
     allow:
       # 包管理
       - "**/uv *"
       - "**/uv --version"
       # 只允许执行项目目录下的 Python 脚本
-      - "python C:/acm/AdoDAS2026-main/**"
-      - "python \"C:/acm/AdoDAS2026-main/**\""
-      - "python C:/acm/AdoDAS2026-main/** *"
-      - "python \"C:/acm/AdoDAS2026-main/**\" *"
-      - "python.exe C:/acm/AdoDAS2026-main/**"
-      - "python.exe \"C:/acm/AdoDAS2026-main/**\""
-      - "python.exe C:/acm/AdoDAS2026-main/** *"
-      - "python.exe \"C:/acm/AdoDAS2026-main/**\" *"
-      - "cd ** && python C:/acm/AdoDAS2026-main/**"
-      - "cd ** && python \"C:/acm/AdoDAS2026-main/**\""
-      - "cd ** && python C:/acm/AdoDAS2026-main/** *"
-      - "cd ** && python \"C:/acm/AdoDAS2026-main/**\" *"
-      - "cd ** && python.exe C:/acm/AdoDAS2026-main/**"
-      - "cd ** && python.exe \"C:/acm/AdoDAS2026-main/**\""
-      - "cd ** && python.exe C:/acm/AdoDAS2026-main/** *"
-      - "cd ** && python.exe \"C:/acm/AdoDAS2026-main/**\" *"
+      - "python /home/yezhong/ACMMM2026/AdoDAS2026-main"
+      - "python \"/home/yezhong/ACMMM2026/AdoDAS2026-main\""
+      - "python /home/yezhong/ACMMM2026/AdoDAS2026-main *"
+      - "python \"/home/yezhong/ACMMM2026/AdoDAS2026-main\" *"
+      - "python.exe /home/yezhong/ACMMM2026/AdoDAS2026-main"
+      - "python.exe \"/home/yezhong/ACMMM2026/AdoDAS2026-main\""
+      - "python.exe /home/yezhong/ACMMM2026/AdoDAS2026-main *"
+      - "python.exe \"/home/yezhong/ACMMM2026/AdoDAS2026-main\" *"
+      - "cd ** && python /home/yezhong/ACMMM2026/AdoDAS2026-main"
+      - "cd ** && python \"/home/yezhong/ACMMM2026/AdoDAS2026-main\""
+      - "cd ** && python /home/yezhong/ACMMM2026/AdoDAS2026-main *"
+      - "cd ** && python \"/home/yezhong/ACMMM2026/AdoDAS2026-main\" *"
+      - "cd ** && python.exe /home/yezhong/ACMMM2026/AdoDAS2026-main"
+      - "cd ** && python.exe \"/home/yezhong/ACMMM2026/AdoDAS2026-main\""
+      - "cd ** && python.exe /home/yezhong/ACMMM2026/AdoDAS2026-main *"
+      - "cd ** && python.exe \"/home/yezhong/ACMMM2026/AdoDAS2026-main\" *"
       # 文件/目录检查
       - "dir *"
       - "type *"
@@ -147,4 +318,21 @@ tools:
       - "Get-ChildItem*"
       - "for /d *"
       # 系统工具
+      # 系统状态只读命令
+      - "pwd"
+      - "whoami"
       - "nvidia-smi*"
+
+      # 仅允许查看工作区/数据集目录的目录信息；不开放 cat/type 读取任意文件
+      - "ls /home/yezhong/ACMMM2026"
+      - "ls /home/yezhong/ACMMM2026/**"
+      - "ls /Dataset/acmmm_datasets"
+      - "ls /Dataset/acmmm_datasets/**"
+      - "find /home/yezhong/ACMMM2026 -maxdepth *"
+      - "find /Dataset/acmmm_datasets/**"
+
+      # Python/训练命令必须显式指向工作区脚本；数据通过代码内只读访问
+      - "python /home/yezhong/ACMMM2026/**"
+      - "python /home/yezhong/ACMMM2026/** *"
+      - "python3 /home/yezhong/ACMMM2026/**"
+      - "python3 /home/yezhong/ACMMM2026/** *"

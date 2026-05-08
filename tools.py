@@ -15,8 +15,9 @@ from hello_agents.tools.errors import ToolErrorCode
 
 from checkpoint_manager import checkpoint_manager  # ★ 检查点管理器
 
+from project_config import PROJECT_ROOT
 
-PROJECT_ROOT = r"C:\acm\AdoDAS2026-main"
+# import cleanlab
 
 
 def _resolve_path(path: str) -> str:
@@ -129,12 +130,21 @@ class RunTrainingTool(Tool):
     def get_parameters(self) -> list[ToolParameter]:
         return [
             ToolParameter(name="script_name", type="string", description="训练脚本名称", required=True),
+            ToolParameter(
+                name="args",
+                type="array",
+                description="传递给训练脚本的命令行参数列表，例如 ['--task', 'a1', '--config', 'tasks/a1/config.yaml']",
+                required=False,
+                default=[]
+            ),
             ToolParameter(name="timeout", type="integer", description="超时时长（秒）", required=False, default=7200)
         ]
 
     def run(self, parameters: Dict[str, Any]) -> ToolResponse:
         script_name = parameters.get("script_name")
         timeout = parameters.get("timeout", 7200)
+        extra_args = parameters.get("args", [])
+
         if not script_name:
             return ToolResponse.error(
                 code=ToolErrorCode.INVALID_PARAM,
@@ -149,50 +159,34 @@ class RunTrainingTool(Tool):
             )
 
         try:
+            cmd = ["python", script_path] + [str(a) for a in extra_args]
+
             process = subprocess.Popen(
-                ["python", script_path],
+                cmd,
                 cwd=PROJECT_ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                universal_newlines=True,
+                # stdout=subprocess.DEVNULL,  # 丢弃输出，train.py 自己负责打印
+                # stderr=subprocess.DEVNULL,
+                # text=True,
             )
-
-            output_lines = []
-
-            def _reader():
-                if process.stdout is None:
-                    return
-                for line in process.stdout:
-                    print(line, end="", flush=True)
-                    output_lines.append(line)
-
-            reader_thread = threading.Thread(target=_reader, daemon=True)
-            reader_thread.start()
 
             try:
                 process.wait(timeout=int(timeout))
             except subprocess.TimeoutExpired:
                 process.kill()
-                reader_thread.join(timeout=1)
                 return ToolResponse.error(
                     code=ToolErrorCode.TIMEOUT,
                     message=f"训练超时（{timeout}s）"
                 )
 
-            reader_thread.join(timeout=1)
-            output = "".join(output_lines)
             return ToolResponse.success(
-                text=output or "训练完成（无输出）",
-                data={"returncode": process.returncode, "output": output}
+                text=f"训练完成，returncode={process.returncode}",
+                data={"returncode": process.returncode}
             )
         except Exception as e:
             return ToolResponse.error(
                 code=ToolErrorCode.EXECUTION_ERROR,
                 message=f"训练失败: {e}"
             )
-
 
 class RunShellTool(Tool):
     """执行 shell 命令的工具。"""
@@ -202,8 +196,15 @@ class RunShellTool(Tool):
 
     def get_parameters(self) -> list[ToolParameter]:
         return [
-            ToolParameter(name="command", type="string", description="要执行的 shell 命令", required=True),
-            ToolParameter(name="timeout", type="integer", description="超时时长（秒）", required=False, default=300)
+            ToolParameter(name="script_name", type="string", description="训练脚本名称", required=True),
+            ToolParameter(
+                name="args",
+                type="array",
+                description="传递给训练脚本的命令行参数列表，例如 ['--task', 'a1', '--config', 'tasks/a1/config.yaml']",
+                required=False,
+                default=[]
+            ),
+            ToolParameter(name="timeout", type="integer", description="超时时长（秒）", required=False, default=7200)
         ]
 
     def run(self, parameters: Dict[str, Any]) -> ToolResponse:

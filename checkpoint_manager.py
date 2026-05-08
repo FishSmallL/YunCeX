@@ -7,8 +7,8 @@ checkpoint_manager.py — 模型检查点管理核心逻辑
   - 与 tools.py 解耦，纯文件操作，不依赖 Agent 框架
 
 检查点目录结构：
-  C:\\acm\\AdoDAS2026-main\\output\\
-    checkpoints\\
+  /home/yezhong/ACMMM2026/AdoDAS2026-main/output/
+    checkpoints/
       checkpoint_registry.json          ← 检查点注册表
       before_lr_change_20260505_170000.pt
       after_smote_tuning_20260505_183000.pt
@@ -27,7 +27,7 @@ from typing import Optional, List, Dict, Any
 # ──────────────────────────────────────────────
 # 路径配置（与 tools.py 保持一致）
 # ──────────────────────────────────────────────
-PROJECT_ROOT      = r"C:\acm\AdoDAS2026-main"
+from project_config import PROJECT_ROOT
 OUTPUT_DIR        = os.path.join(PROJECT_ROOT, "output")
 CHECKPOINT_DIR    = os.path.join(OUTPUT_DIR, "checkpoints")
 REGISTRY_FILE     = os.path.join(CHECKPOINT_DIR, "checkpoint_registry.json")

@@ -14,9 +14,15 @@ __pycache__/
 
 # Jupyter
 .ipynb_checkpoints/
+
 # 模型缓存
 models/
 checkpoints/
+
+# 输出文件
+memory/
+logs/
+tool-output/
 
 # 大文件
 *.bin
