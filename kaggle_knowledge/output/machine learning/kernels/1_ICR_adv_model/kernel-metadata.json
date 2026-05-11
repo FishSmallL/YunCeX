@@ -1,0 +1,23 @@
+{
+  "id": "room722/icr-adv-model",
+  "id_no": 39271533,
+  "title": "ICR_adv_model",
+  "code_file": "icr-adv-model.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "keywords": [],
+  "dataset_sources": [
+    ""
+  ],
+  "kernel_sources": [],
+  "competition_sources": [
+    "icr-identify-age-related-conditions"
+  ],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-images/python@sha256:b51f8a2e75060c2e8d99e7856b15cb9a663f50a2751ba494d8329367e6e2db65",
+  "machine_shape": "None"
+}

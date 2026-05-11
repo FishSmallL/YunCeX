@@ -1,0 +1,16 @@
+{
+  "keywords": ["machine learning", "data science"],
+  "output_dir": "output",
+  "competitions_per_keyword": 10,
+  "top_leaderboard_users": 5,
+  "kernels_per_user": 2,
+  "save_csv": {
+    "competitions": true,
+    "leaderboard": true,
+    "kernels_list": true
+  },
+  "min_leaderboard_score": 0.6,
+  "sort_by_teams": "numberOfTeams",
+  "top_skills": 5,
+  "comment": "说明: keywords可被命令行参数覆盖。top_skills控制匹配后返回多少条技巧注入Agent"
+}

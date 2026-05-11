@@ -1,0 +1,23 @@
+{
+  "id": "alphawave9/march-2026-sub",
+  "id_no": 115393255,
+  "title": "March 2026 sub",
+  "code_file": "march-2026-sub.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [],
+  "dataset_sources": [
+    "deepak0003/march-machine-learning-mania-2026-dataset"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [
+    "march-machine-learning-mania-2026"
+  ],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-images/python@sha256:c370a5ff133d162d17c2dca332b50f3e85c0b0ed1471ee18e98e3009eee80b08",
+  "machine_shape": "None"
+}

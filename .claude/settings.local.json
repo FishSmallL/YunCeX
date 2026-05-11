@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"D:\\\\a\\\\envs\\\\cameltrack\\\\python.exe\" run_kernel_skill.py --dry-run)",
+      "Bash(\"D:\\\\a\\\\envs\\\\cameltrack\\\\python.exe\" test_json_parse.py)"
+    ]
+  }
+}
