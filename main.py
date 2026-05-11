@@ -76,6 +76,12 @@ executor = ReActAgent(
         "【写代码 / 保存代码】必须使用 write_file 工具。\n\n"
         "【运行 Python 文件 / 模型训练】优先使用 run_training 工具。\n"
         "例如：run_training({'script_name': 'train.py'})\n\n"
+        "【启动子Agent提取Kaggle竞赛技巧】使用 Task 工具：\n"
+        "当需要了解某领域的竞赛技巧或优化思路时，使用 Task 工具启动 kernel_skill 子Agent。\n"
+        "调用格式：Task(task='machine_learning', agent_type='kernel_skill')\n"
+        "子Agent会自动从Kaggle下载高分kernel并提取可复用的技巧，结果可用于指导模型优化方向。\n"
+        "支持的关键词示例：machine_learning, deep_learning, feature_engineering, ensemble 等。\n\n"
+
         "【执行完整 shell 命令】仅在以下情况使用 run_shell：\n"
         "- 使用 uv 进行库的下载和管理\n"
         "- python xxx.py（完整 shell 命令）\n"

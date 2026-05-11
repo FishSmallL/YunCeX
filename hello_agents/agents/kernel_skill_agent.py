@@ -20,7 +20,7 @@ from ..core.config import Config
 
 
 class KernelSkillAgent(Agent):
-    """处理 Kaggle kernel 并提取可复用 ML 技巧的子 agent。
+    """处理 Kaggle kernel 并提取可复用技巧的子 agent。
 
     输入格式 (input_text, JSON 或纯文本):
         JSON: {"keyword": "machine_learning",
@@ -186,6 +186,7 @@ class KernelSkillAgent(Agent):
         top_users = config.get("top_leaderboard_users", 5)
         min_score = config.get("min_leaderboard_score")
         kernels_per_user = config.get("kernels_per_user", 5)
+        min_team_count = config.get("min_team_count", 0)
         save_csv = config.get("save_csv", {})
 
         print(f"\n  [下载] 搜索关键词 '{keyword}' 的竞赛...")
@@ -194,6 +195,7 @@ class KernelSkillAgent(Agent):
             max_competitions=competitions_per_keyword,
             save_csv_flag=save_csv.get("competitions", True),
             output_dir=output_dir,
+            min_team_count=min_team_count,
         )
 
         competitions = competitions_dict.get(keyword, [])

@@ -62,7 +62,7 @@ class TaskTool(Tool):
             ToolParameter(
                 name="agent_type",
                 type="string",
-                description="子代理类型：react（推理行动）、reflection（反思）、plan（规划）、simple（简单对话）",
+                description="子代理类型：react（推理行动）、reflection（反思）、plan（规划）、simple（简单对话）、kernel_skill（Kaggle技能提取）",
                 required=False,
                 default="react"
             ),

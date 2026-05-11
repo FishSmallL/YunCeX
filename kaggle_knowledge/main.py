@@ -78,16 +78,18 @@ def main():
     top_leaderboard_users = config.get("top_leaderboard_users", 5)
     min_leaderboard_score = config.get("min_leaderboard_score")
     kernels_per_user = config.get("kernels_per_user", 5)
+    min_team_count = config.get("min_team_count", 0)
     save_csv_config = config.get("save_csv", {})
-    
+
     # ============ 第一步：搜索竞赛 ============
     print_section("第一步：搜索竞赛")
-    
+
     competitions_dict = batch_search_competitions(
         keywords,
         max_competitions=competitions_per_keyword,
         save_csv_flag=save_csv_config.get("competitions", True),
-        output_dir=output_dir
+        output_dir=output_dir,
+        min_team_count=min_team_count,
     )
     
     # 统计竞赛总数

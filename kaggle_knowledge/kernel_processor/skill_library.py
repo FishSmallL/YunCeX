@@ -285,10 +285,10 @@ def build_skill_context(
         lines.append(f"\n### 技巧{i}: {s['name']}")
         lines.append(f"分类: {s.get('category', 'N/A')}")
         lines.append(f"描述: {s['description']}")
-        # 保留 body 但截断到 600 字符
+        # 保留 body 但截断到 1000 字符
         body = s["body"]
-        if len(body) > 600:
-            body = body[:600] + "\n...(已截断)"
+        if len(body) > 1000:
+            body = body[:1000] + "\n...(已截断)"
         lines.append(body)
 
     return "\n".join(lines)

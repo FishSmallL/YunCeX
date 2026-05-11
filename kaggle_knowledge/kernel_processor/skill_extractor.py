@@ -1,6 +1,6 @@
 """基于 LLM 的 notebook 技巧提取
 
-用精心设计的 prompt 让 LLM 从 Kaggle kernel notebook 中提取可复用的 ML 技巧，
+用设计的 prompt 让 LLM 从 Kaggle kernel notebook 中提取可复用的 ML 技巧，
 聚焦 5 个类别。
 """
 
@@ -16,7 +16,7 @@ CATEGORIES = [
     "特征工程",
     "模型架构",
     "集成策略",
-    "技巧",
+    "调试技巧",
 ]
 
 EXTRACTION_PROMPT = """你是一个竞赛数据科学专家。分析以下 Kaggle kernel notebook，提取可复用的技巧。
@@ -39,7 +39,7 @@ EXTRACTION_PROMPT = """你是一个竞赛数据科学专家。分析以下 Kaggl
     "problems_solved": "该技巧可解决的具体问题列表，逗号分隔。如：高基数类别特征编码、缺失值模式保留、类别不平衡分类、时间序列特征构建、多模型方差缩减",
     "category": "特征工程",
     "technique": "详细说明（≤500字）。必须包含：1)具体怎么做 2)为什么这样做有效 3)相比常见做法的优势",
-    "code_pattern": "可执行的代码片段，必须包含 import 语句，禁止使用 # 占位注释（如 # 这里做XX），必须是真实有用的代码",
+    "code_pattern": "可执行的代码片段，禁止使用 # 占位注释（如 # 这里做XX），必须是有效的代码",
     "when_to_use": "什么场景下应该使用（指明数据条件、问题类型、模型类型）",
     "notes": "注意事项：什么情况下可能失效、调参建议、常见错误"
   }
