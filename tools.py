@@ -5,8 +5,7 @@ tools.py — Agent 工具类
 
 import subprocess
 import os
-import threading
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from policy import policy  # 统一从策略单例鉴权
 from hello_agents.tools.base import Tool, ToolParameter
@@ -122,10 +121,19 @@ class WriteFileTool(Tool):
 
 
 class RunTrainingTool(Tool):
-    """运行训练脚本的工具。"""
+    """运行训练脚本的工具。
+
+    训练脚本的 stdout/stderr 直接继承当前终端，避免把 baseline.py
+    自带的进度输出再作为工具观察结果喂给 Agent。默认不设置训练
+    进程超时，因此不会因为工具默认 timeout 中止长时间训练。
+    """
 
     def __init__(self):
-        super().__init__(name="run_training", description="执行训练脚本", expandable=False)
+        super().__init__(
+            name="run_training",
+            description="执行训练脚本；默认等待脚本自然结束，不捕获训练日志，不设置训练进程超时",
+            expandable=False
+        )
 
     def get_parameters(self) -> list[ToolParameter]:
         return [
@@ -137,13 +145,19 @@ class RunTrainingTool(Tool):
                 required=False,
                 default=[]
             ),
-            ToolParameter(name="timeout", type="integer", description="超时时长（秒）", required=False, default=7200)
+            ToolParameter(
+                name="timeout",
+                type="integer",
+                description="训练进程超时时长（秒）；0 或不传表示不因工具超时中止训练",
+                required=False,
+                default=0
+            ),
         ]
 
     def run(self, parameters: Dict[str, Any]) -> ToolResponse:
         script_name = parameters.get("script_name")
-        timeout = parameters.get("timeout", 7200)
-        extra_args = parameters.get("args", [])
+        timeout = self._parse_timeout(parameters.get("timeout"))
+        extra_args = parameters.get("args", []) or []
 
         if not script_name:
             return ToolResponse.error(
@@ -151,26 +165,27 @@ class RunTrainingTool(Tool):
                 message="缺少参数 script_name"
             )
 
-        script_path = os.path.join(PROJECT_ROOT, script_name)
+        script_path = os.path.abspath(os.path.join(PROJECT_ROOT, script_name))
         if not policy.is_allowed_training(script_path):
             return ToolResponse.error(
                 code=ToolErrorCode.ACCESS_DENIED,
                 message=f"run_training 无权执行: {script_path}"
             )
-
-        try:
-            cmd = ["python", script_path] + [str(a) for a in extra_args]
-
-            process = subprocess.Popen(
-                cmd,
-                cwd=PROJECT_ROOT,
-                # stdout=subprocess.DEVNULL,  # 丢弃输出，train.py 自己负责打印
-                # stderr=subprocess.DEVNULL,
-                # text=True,
+        if not os.path.exists(script_path):
+            return ToolResponse.error(
+                code=ToolErrorCode.NOT_FOUND,
+                message=f"训练脚本不存在: {script_path}"
             )
+        
+        try:
+            cmd = ["python", "-u", script_path] + [str(a) for a in extra_args]
+            process = subprocess.Popen(cmd, cwd=PROJECT_ROOT)
 
             try:
-                process.wait(timeout=int(timeout))
+                if timeout is None:
+                    process.wait()
+                else:
+                    process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 process.kill()
                 return ToolResponse.error(
@@ -187,6 +202,14 @@ class RunTrainingTool(Tool):
                 code=ToolErrorCode.EXECUTION_ERROR,
                 message=f"训练失败: {e}"
             )
+        
+    def _parse_timeout(self, raw_timeout: Any) -> Optional[int]:
+        if raw_timeout in (None, "", 0, "0"):
+            return None
+        timeout = int(raw_timeout)
+        if timeout <= 0:
+            return None
+        return timeout
 
 class RunShellTool(Tool):
     """执行 shell 命令的工具。"""
