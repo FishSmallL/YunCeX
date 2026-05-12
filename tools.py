@@ -5,6 +5,9 @@ tools.py — Agent 工具类
 
 import subprocess
 import os
+import shlex
+import re
+from itertools import islice
 from typing import Dict, Any, Optional
 
 from policy import policy  # 统一从策略单例鉴权
@@ -16,7 +19,13 @@ from checkpoint_manager import checkpoint_manager  # ★ 检查点管理器
 
 from project_config import PROJECT_ROOT
 
-# import cleanlab
+from data_quality_tools import (
+    ApplyCleanlabIssueFixTool,
+    CleanlabDiagnoseTool,
+    DataQualityLoopPolicyTool,
+    PrepareCleanlabModelSourceTool,
+    TabularDataRepairTool,
+)
 
 
 def _resolve_path(path: str) -> str:
@@ -27,15 +36,27 @@ class ReadFileTool(Tool):
     """读取文件或列出目录内容的工具。"""
 
     def __init__(self):
-        super().__init__(name="read_file", description="读取文件或目录内容", expandable=False)
+        super().__init__(
+            name="read_file",
+            description="读取文件或目录内容；读取大型文本/CSV 时建议传 max_lines 只预览前 N 行，避免把完整数据塞进上下文",
+            expandable=False,
+        )
 
     def get_parameters(self) -> list[ToolParameter]:
         return [
-            ToolParameter(name="file_path", type="string", description="文件或目录路径", required=True)
+            ToolParameter(name="file_path", type="string", description="文件或目录路径", required=True),
+            ToolParameter(
+                name="max_lines",
+                type="integer",
+                description="可选：最多读取的行数；用于预览大型文本/CSV，避免读取完整文件",
+                required=False,
+                default=0,
+            ),
         ]
 
     def run(self, parameters: Dict[str, Any]) -> ToolResponse:
-        file_path = parameters.get("file_path")
+        file_path = parameters.get("file_path") or parameters.get("path")
+        max_lines = self._parse_max_lines(parameters.get("max_lines"))
         if not file_path:
             return ToolResponse.error(
                 code=ToolErrorCode.INVALID_PARAM,
@@ -65,17 +86,42 @@ class ReadFileTool(Tool):
 
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
+                if max_lines:
+                    selected_lines = list(islice(f, max_lines))
+                    content = "".join(selected_lines)
+                    truncated = next(f, None) is not None
+                else:
+                    content = f.read()
+                    selected_lines = None
+                    truncated = False
+
+            if max_lines:
+                line_count = len(selected_lines or [])
+                prefix = f"已预览 {line_count} 行"
+                if truncated:
+                    prefix += f"（已按 max_lines={max_lines} 截断，未读取完整文件）"
+                text = f"{prefix}: {file_path}\n{content}"
+            else:
+                text = content
+
             return ToolResponse.success(
-                text=content,
-                data={"content": content}
+                text=text,
+                data={"content": content, "max_lines": max_lines, "truncated": truncated}
             )
         except Exception as e:
             return ToolResponse.error(
                 code=ToolErrorCode.EXECUTION_ERROR,
                 message=f"读取失败: {e}"
             )
-
+        
+    def _parse_max_lines(self, raw_max_lines: Any) -> int:
+        if raw_max_lines in (None, "", 0, "0"):
+            return 0
+        try:
+            max_lines = int(raw_max_lines)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, max_lines)
 
 class WriteFileTool(Tool):
     """写文件工具。"""
@@ -215,34 +261,74 @@ class RunShellTool(Tool):
     """执行 shell 命令的工具。"""
 
     def __init__(self):
-        super().__init__(name="run_shell", description="执行 shell 命令", expandable=False)
+        super().__init__(
+            name="run_shell",
+            description=(
+                "执行 shell 命令。必须传 command 字符串，例如 "
+                "{\"command\": \"python train.py --epochs 3\", \"timeout\": 7200}。"
+                "为兼容旧调用，也可传 script_name + args，工具会自动拼成 command；"
+                "需要切换目录时优先传 cwd，不要在 command 中写 cd ... &&。"
+            ),
+            expandable=False,
+        )
 
     def get_parameters(self) -> list[ToolParameter]:
         return [
-            ToolParameter(name="script_name", type="string", description="训练脚本名称", required=True),
+            ToolParameter(
+                name="command",
+                type="string",
+                description="要执行的完整 shell 命令字符串；这是首选且唯一必填参数，例如 'python train.py --epochs 3'",
+                required=True,
+            ),
+            ToolParameter(name="timeout", type="integer", description="超时时长（秒）", required=False, default=7200),
+            ToolParameter(
+                name="cwd",
+                type="string",
+                description="可选：命令工作目录；推荐用它替代 cd ... &&，仅允许项目目录内路径",
+                required=False,
+            ),
+            ToolParameter(
+                name="script_name",
+                type="string",
+                description="兼容旧调用：脚本/可执行文件名；当 command 缺失时会与 args 拼成 command",
+                required=False,
+            ),
             ToolParameter(
                 name="args",
                 type="array",
-                description="传递给训练脚本的命令行参数列表，例如 ['--task', 'a1', '--config', 'tasks/a1/config.yaml']",
+                description="兼容旧调用：传递给 script_name 的参数列表，例如 ['--task', 'a1']",
                 required=False,
-                default=[]
+                default=[],
             ),
-            ToolParameter(name="timeout", type="integer", description="超时时长（秒）", required=False, default=7200)
         ]
 
     def run(self, parameters: Dict[str, Any]) -> ToolResponse:
-        command = parameters.get("command")
-        timeout = parameters.get("timeout", 300)
-        if not command:
+        raw_command = self._resolve_command(parameters)
+        timeout = self._parse_timeout(parameters.get("timeout", 7200))
+        if not raw_command:
             return ToolResponse.error(
                 code=ToolErrorCode.INVALID_PARAM,
-                message="缺少参数 command"
+                message=(
+                    "缺少参数 command。请使用 {\"command\": \"<完整 shell 命令>\"}；"
+                    "兼容方式可传 {\"script_name\": \"python\", \"args\": [\"train.py\"]}。"
+                ),
             )
 
-        if not policy.check("run_shell", command):
+        try:
+            command, cwd, policy_command = self._prepare_execution(raw_command, parameters)
+        except ValueError as exc:
+            return ToolResponse.error(
+                code=ToolErrorCode.INVALID_PARAM,
+                message=str(exc),
+            )
+
+        if not policy.check("run_shell", policy_command):
+            hint = ""
+            if "&&" in raw_command or "&" in raw_command:
+                hint = "；提示：安全策略会拒绝 shell 连接符 &/&&，请使用 cwd 参数替代 cd ... &&"
             return ToolResponse.error(
                 code=ToolErrorCode.ACCESS_DENIED,
-                message=f"run_shell 无权执行: {command}"
+                message=f"run_shell 无权执行: {raw_command}{hint}；策略检查命令: {policy_command}"
             )
 
         try:
@@ -251,12 +337,13 @@ class RunShellTool(Tool):
                 shell=True,
                 capture_output=True,
                 text=True,
-                timeout=int(timeout),
+                timeout=timeout,
+                cwd=cwd,
             )
             output = result.stdout + result.stderr
             return ToolResponse.success(
                 text=output or "命令执行完毕（无输出）",
-                data={"returncode": result.returncode, "output": output}
+                data={"returncode": result.returncode, "output": output, "cwd": cwd, "policy_command": policy_command}
             )
         except subprocess.TimeoutExpired:
             return ToolResponse.error(
@@ -269,6 +356,137 @@ class RunShellTool(Tool):
                 message=f"命令执行失败: {e}"
             )
 
+    def _resolve_command(self, parameters: Dict[str, Any]) -> Optional[str]:
+        command = parameters.get("command") or parameters.get("cmd") or parameters.get("input")
+        if isinstance(command, list):
+            command = " ".join(shlex.quote(str(part)) for part in command)
+        if isinstance(command, str) and command.strip():
+            return command.strip()
+
+        script_name = parameters.get("script_name")
+        if not script_name:
+            return None
+
+        args = parameters.get("args", []) or []
+        if isinstance(args, str):
+            args = shlex.split(args)
+        elif not isinstance(args, (list, tuple)):
+            args = [args]
+
+        parts = [str(script_name), *[str(arg) for arg in args]]
+        return " ".join(shlex.quote(part) for part in parts if part)
+
+    def _parse_timeout(self, raw_timeout: Any) -> int:
+        try:
+            timeout = int(raw_timeout)
+        except (TypeError, ValueError):
+            timeout = 7200
+        return max(1, timeout)
+
+    def _prepare_execution(self, raw_command: str, parameters: Dict[str, Any]) -> tuple[str, Optional[str], str]:
+        command = self._normalize_shell_command(raw_command)
+        cwd = parameters.get("cwd") or parameters.get("workdir")
+
+        cd_cwd, command_without_cd = self._extract_leading_cd(command)
+        if cd_cwd:
+            if cwd and self._resolve_cwd(cwd) != self._resolve_cwd(cd_cwd):
+                raise ValueError("command 中的 cd 目录与 cwd 参数不一致，请只保留一种工作目录写法")
+            cwd = cd_cwd
+            command = command_without_cd
+
+        resolved_cwd = self._resolve_cwd(cwd) if cwd else None
+        if resolved_cwd and not self._is_project_cwd(resolved_cwd):
+            raise ValueError(f"run_shell cwd 只能位于项目目录内: {resolved_cwd}")
+
+        policy_command = self._build_policy_command(command, resolved_cwd)
+        return command, resolved_cwd, policy_command
+    
+    def _normalize_shell_command(self, command: str) -> str:
+        """Normalize common model-generated shell formatting glitches.
+
+        LLM tool arguments occasionally contain hard line breaks in the middle of
+        absolute paths (for example ``/home/user/project\n/script.py``) or append
+        ``2>&1`` even though this tool already captures stderr. Leaving either
+        artifact in place can make Python look for the script from the wrong
+        directory or make policy reject an otherwise safe command.
+        """
+        command = command.replace("\\\r\n", " ").replace("\\\n", " ")
+        command = re.sub(r"(?<=\S)\r?\n\s*(?=/)", "", command)
+        command = re.sub(r"\s+2>\s*&\s*1\s*$", "", command)
+        return command.replace("\r\n", " ").replace("\n", " ").strip()
+
+    def _strip_shell_line_continuations(self, command: str) -> str:
+        return self._normalize_shell_command(command)
+
+    def _extract_leading_cd(self, command: str) -> tuple[Optional[str], str]:
+        match = re.match(r"^\s*cd\s+((?:'[^']*')|(?:\"[^\"]*\")|[^&]+?)\s*&&\s*(.+)$", command, flags=re.DOTALL)
+        if not match:
+            return None, command
+        cwd_token, remaining_command = match.groups()
+        try:
+            cwd_parts = shlex.split(cwd_token)
+        except ValueError as exc:
+            raise ValueError(f"无法解析 cd 目录: {exc}") from exc
+        if len(cwd_parts) != 1:
+            raise ValueError("cd 目录格式无效")
+        return cwd_parts[0], remaining_command.strip()
+
+    def _resolve_cwd(self, cwd: Any) -> str:
+        if not isinstance(cwd, str) or not cwd.strip():
+            raise ValueError("cwd 必须是非空字符串")
+        base = os.path.abspath(PROJECT_ROOT)
+        return os.path.abspath(os.path.join(base, cwd)) if not os.path.isabs(cwd) else os.path.abspath(cwd)
+
+    def _is_project_cwd(self, cwd: str) -> bool:
+        project_root = os.path.abspath(PROJECT_ROOT)
+        try:
+            return os.path.commonpath([project_root, cwd]) == project_root
+        except ValueError:
+            return False
+
+    def _build_policy_command(self, command: str, cwd: Optional[str]) -> str:
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return command
+        if len(parts) < 2 or parts[0] not in {"python", "python3", "python.exe"}:
+            return command
+
+        script = parts[1]
+        if script.startswith("-"):
+            return command
+        if not os.path.isabs(script):
+            base = cwd or os.path.abspath(PROJECT_ROOT)
+            script = os.path.abspath(os.path.join(base, script))
+        normalized_parts = [parts[0], script, *parts[2:]]
+        return " ".join(shlex.quote(str(part)) for part in normalized_parts)
+
+    def _resolve_command(self, parameters: Dict[str, Any]) -> Optional[str]:
+        command = parameters.get("command") or parameters.get("cmd") or parameters.get("input")
+        if isinstance(command, list):
+            command = " ".join(shlex.quote(str(part)) for part in command)
+        if isinstance(command, str) and command.strip():
+            return command.strip()
+
+        script_name = parameters.get("script_name")
+        if not script_name:
+            return None
+
+        args = parameters.get("args", []) or []
+        if isinstance(args, str):
+            args = shlex.split(args)
+        elif not isinstance(args, (list, tuple)):
+            args = [args]
+
+        parts = [str(script_name), *[str(arg) for arg in args]]
+        return " ".join(shlex.quote(part) for part in parts if part)
+
+    def _parse_timeout(self, raw_timeout: Any) -> int:
+        try:
+            timeout = int(raw_timeout)
+        except (TypeError, ValueError):
+            timeout = 7200
+        return max(1, timeout)
 
 # ══════════════════════════════════════════════════════════════
 # ★ 新增：检查点工具
@@ -511,10 +729,16 @@ class ListCheckpointsTool(Tool):
 # ──────────────────────────────────────────────
 # 兼容旧导出
 # ──────────────────────────────────────────────
-read_file        = ReadFileTool()
-write_file       = WriteFileTool()
-run_training     = RunTrainingTool()
-run_shell        = RunShellTool()
-save_checkpoint  = SaveCheckpointTool()   # ★ 新增
-rollback         = RollbackTool()          # ★ 新增
-list_checkpoints = ListCheckpointsTool()   # ★ 新增
+read_file                 = ReadFileTool()
+write_file                = WriteFileTool()
+run_training              = RunTrainingTool()
+run_shell                 = RunShellTool()
+save_checkpoint           = SaveCheckpointTool()
+rollback                  = RollbackTool()
+list_checkpoints          = ListCheckpointsTool()
+prepare_cleanlab_model_source = PrepareCleanlabModelSourceTool()
+prepare_cleanlab_baseline     = prepare_cleanlab_model_source  # backward-compatible alias
+cleanlab_diagnose             = CleanlabDiagnoseTool()
+data_quality_loop_policy      = DataQualityLoopPolicyTool()
+apply_cleanlab_issue_fix      = ApplyCleanlabIssueFixTool()
+tabular_data_repair       = TabularDataRepairTool()
