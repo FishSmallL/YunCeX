@@ -92,7 +92,7 @@ def extract_code_comments(code: str) -> List[str]:
     return comments
 
 
-def notebook_to_text(cells: List[Dict], max_len: int = 8000) -> str:
+def notebook_to_text(cells: List[Dict], max_len: int = 30000) -> str:
     """将 notebook cell 列表展平为紧凑文本，用于 LLM 输入。
 
     代码 cell 按 cell 截断；Markdown cell 保留较短的版本。

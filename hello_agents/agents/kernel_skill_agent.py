@@ -12,11 +12,12 @@
 import json
 import re
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, AsyncGenerator
 
 from ..core.agent import Agent
 from ..core.llm import HelloAgentsLLM
 from ..core.config import Config
+from ..core.streaming import StreamEvent, StreamEventType
 
 
 class KernelSkillAgent(Agent):
@@ -86,23 +87,41 @@ class KernelSkillAgent(Agent):
         print(f"Kernel 目录数: {len(kernel_dirs)}")
         print(f"{'='*50}")
 
-        if not kernel_dirs:
-            # Check if we already have skills for this keyword
-            matched = match_keyword(keyword, self.skill_library_dir)
-            if matched:
-                # Build and return existing skill context
-                from kaggle_knowledge.kernel_processor.skill_library import (
-                    search_skills, build_skill_context,
+        # 始终先查 Skill 库（无论是否有本地 kernel）
+        matched = match_keyword(keyword, self.skill_library_dir)
+        if matched:
+            from kaggle_knowledge.kernel_processor.skill_library import (
+                search_skills, build_skill_context,
+            )
+            top_k = self._get_top_skills()
+            min_skills = self._get_min_skills()
+            skill_count = len(search_skills(
+                matched, self.skill_library_dir, top_k=999
+            ))
+            if skill_count >= min_skills:
+                ctx = build_skill_context(
+                    matched, self.skill_library_dir, top_k=top_k
                 )
-                top_k = self._get_top_skills()
-                ctx = build_skill_context(matched, self.skill_library_dir, top_k=top_k)
                 return (
                     f"关键词 '{keyword}' 已匹配到已有 skill 库目录 '{matched}'。\n\n"
                     f"{ctx}"
                 )
+            else:
+                print(
+                    f"\n匹配到目录 '{matched}' 但仅有 {skill_count} 条技能"
+                    f"（阈值 {min_skills}），将继续提取补充..."
+                )
+                # 不足 → 继续走提取路径
+        else:
+            print(f"\n未匹配到已有 skill")
 
-            # No local kernels, no matching skills → auto-download
-            print(f"\n未找到关键词 '{keyword}' 的本地 kernel 或 skill，自动触发 Kaggle 下载...")
+        # 本地 kernel 不足时自动下载补充
+        min_kernels = self._get_min_kernels()
+        if len(kernel_dirs) < min_kernels:
+            if kernel_dirs:
+                print(f"\n本地 kernel 数 {len(kernel_dirs)} < {min_kernels}，将下载补充...")
+            else:
+                print(f"\n未找到关键词 '{keyword}' 的本地 kernel，自动触发 Kaggle 下载...")
             self._download_kernels_for_keyword(keyword)
             kernel_dirs = self._find_kernel_dirs(keyword)
 
@@ -113,17 +132,60 @@ class KernelSkillAgent(Agent):
                 )
 
         # Process kernels and extract skills
-        all_skills = extract_skills_from_notebooks_batch(
-            kernel_dirs, keyword, self.llm
+        from kaggle_knowledge.kernel_processor.skill_extractor import (
+            extract_skills_2pass,
+            dedup_skills,
         )
+        from kaggle_knowledge.kernel_processor.notebook_parser import (
+            parse_notebook,
+            notebook_to_text,
+            get_kernel_competition,
+        )
+        all_skills = []
+        for kdir in kernel_dirs:
+            kpath = Path(kdir)
+            ipynb_files = list(kpath.glob("*.ipynb"))
+            if not ipynb_files:
+                continue
+            meta_files = list(kpath.glob("kernel-metadata.json"))
+            competition = (
+                get_kernel_competition(str(meta_files[0]))
+                if meta_files else "unknown"
+            )
+            try:
+                cells = parse_notebook(str(ipynb_files[0]))
+                text = notebook_to_text(cells, max_len=30000)
+                skills = extract_skills_2pass(
+                    text, kpath.name, competition, keyword, self.llm
+                )
+                all_skills.extend(skills)
+            except Exception as e:
+                print(f"    处理 {kpath.name} 时出错: {e}")
+
+        # 去重（精确 + 语义）
+        if len(all_skills) > 1:
+            all_skills = dedup_skills(all_skills, llm=self.llm)
 
         if not all_skills:
             return f"未能从 {len(kernel_dirs)} 个 kernel 中提取到任何技巧。"
 
+        # 按竞赛 slug 分组保存（slug 取自 competition ref 最后一个字段）
+        # 先清理涉及到的竞赛目录的旧 skill 文件
+        comp_slugs = {s.get("source_competition", keyword) for s in all_skills}
+        for slug in comp_slugs:
+            comp_dir = Path(self.skill_library_dir) / self._sanitize_keyword(slug)
+            if comp_dir.is_dir():
+                for f in comp_dir.glob("skill_*.md"):
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+
         # Save skills to library
         saved_paths = []
         for skill in all_skills:
-            path = save_skill(keyword, skill, self.skill_library_dir)
+            comp_slug = skill.get("source_competition", keyword)
+            path = save_skill(comp_slug, skill, self.skill_library_dir)
             saved_paths.append(path)
 
         # Build summary
@@ -132,12 +194,13 @@ class KernelSkillAgent(Agent):
             cat = s.get("category", "未分类")
             categories[cat] = categories.get(cat, 0) + 1
 
+        comp_dirs = ", ".join(sorted(comp_slugs))
         summary_lines = [
             f"\n✅ 技能提取完成",
             f"关键词: {keyword}",
             f"处理 kernel 数: {len(kernel_dirs)}",
             f"提取技巧总数: {len(all_skills)}",
-            f"保存位置: {self.skill_library_dir}/{self._sanitize_keyword(keyword)}/",
+            f"保存位置: {self.skill_library_dir}/[{comp_dirs}]/",
             f"\n分类统计:",
         ]
         for cat, count in sorted(categories.items()):
@@ -157,6 +220,475 @@ class KernelSkillAgent(Agent):
 
         return "\n".join(summary_lines)
 
+    async def arun_stream(
+        self, input_text: str, **kwargs
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """流式执行 kernel skill 提取流程，实时 yield 进度事件。
+
+        与 run() 功能相同，但通过 StreamEvent 实时报告进度，
+        提升子 Agent 调用时的用户体验。
+
+        Args:
+            input_text: JSON 或纯文本，包含 keyword 和可选的 kernel_dirs
+
+        Yields:
+            StreamEvent: 进度事件
+        """
+        total_steps = 0
+
+        # ── 阶段 1: 启动 ──
+        yield StreamEvent.create(
+            StreamEventType.AGENT_START,
+            self.name,
+            input_text=input_text,
+        )
+
+        # ── 阶段 2: 解析输入 ──
+        keyword, kernel_dirs = self._parse_input(input_text)
+        yield self._chunk(
+            f"KernelSkillAgent 开始处理关键词 '{keyword}'\n"
+            f"  Skill 库: {self.skill_library_dir}\n"
+            f"  本地 kernel 数: {len(kernel_dirs)}\n"
+        )
+
+        # ── 阶段 3: 匹配 Skill 库（无论是否有本地 kernel，都优先查 Skill 库）──
+        from kaggle_knowledge.kernel_processor import match_keyword
+
+        total_steps += 1
+        max_hint = self._get_top_skills()
+        yield StreamEvent.create(
+            StreamEventType.STEP_START,
+            self.name,
+            step=total_steps,
+            max_steps=f"{max_hint}+",
+        )
+        yield self._chunk(f"正在匹配 Skill 库 (top_k={max_hint})...\n")
+
+        matched = match_keyword(keyword, self.skill_library_dir)
+        if matched:
+            from kaggle_knowledge.kernel_processor.skill_library import (
+                search_skills, build_skill_context,
+            )
+            min_skills = self._get_min_skills()
+            skill_count = len(search_skills(
+                matched, self.skill_library_dir, top_k=999
+            ))
+            if skill_count >= min_skills:
+                ctx = build_skill_context(
+                    matched, self.skill_library_dir, top_k=max_hint
+                )
+                yield self._chunk(
+                    f"已匹配到目录 '{matched}' ({skill_count} 条已有技能，满足阈值 {min_skills})\n"
+                )
+                yield StreamEvent.create(
+                    StreamEventType.STEP_FINISH,
+                    self.name,
+                    step=total_steps,
+                )
+                result = (
+                    f"关键词 '{keyword}' 已匹配到已有 skill 库目录 '{matched}'。\n\n"
+                    f"{ctx}"
+                )
+                yield StreamEvent.create(
+                    StreamEventType.AGENT_FINISH,
+                    self.name,
+                    result=result,
+                    total_steps=total_steps,
+                    max_steps_reached=False,
+                )
+                return
+            else:
+                yield self._chunk(
+                    f"已匹配到目录 '{matched}' 但仅有 {skill_count} 条技能"
+                    f"（阈值 {min_skills}），将继续提取补充...\n"
+                )
+                # 不足 → 继续走提取路径（下面）
+        else:
+            yield self._chunk("未匹配到已有 skill\n")
+
+        yield StreamEvent.create(
+            StreamEventType.STEP_FINISH,
+            self.name,
+            step=total_steps,
+        )
+
+        # ── 阶段 4: 本地 kernel 不足时自动下载补充 ──
+        min_kernels = self._get_min_kernels()
+        if len(kernel_dirs) < min_kernels:
+            if kernel_dirs:
+                yield self._chunk(
+                    f"本地 kernel 数 {len(kernel_dirs)} < {min_kernels}，将下载补充...\n"
+                )
+            total_steps += 1
+            yield StreamEvent.create(
+                StreamEventType.STEP_START,
+                self.name,
+                step=total_steps,
+                max_steps="...",
+            )
+
+            kernel_dirs_found = []
+            async for event in self._download_kernels_stream(keyword):
+                if event.type == StreamEventType.LLM_CHUNK:
+                    yield event
+                elif event.type == StreamEventType.AGENT_FINISH:
+                    kernel_dirs_found = event.data.get("kernel_dirs", [])
+                    yield self._chunk(
+                        f"下载完成，找到 {len(kernel_dirs_found)} 个 kernel 目录\n"
+                    )
+
+            kernel_dirs = kernel_dirs_found or self._find_kernel_dirs(keyword)
+
+            yield StreamEvent.create(
+                StreamEventType.STEP_FINISH,
+                self.name,
+                step=total_steps,
+            )
+
+            if not kernel_dirs:
+                result = (
+                    f"已尝试从 Kaggle 下载关键词 '{keyword}' 的 kernel，但仍未找到。"
+                    f"请检查关键词是否正确，或手动运行 kaggle_knowledge/main.py。"
+                )
+                yield StreamEvent.create(
+                    StreamEventType.AGENT_FINISH,
+                    self.name,
+                    result=result,
+                    total_steps=total_steps,
+                    max_steps_reached=False,
+                )
+                return
+
+        # ── 阶段 5: 提取技能（逐个 kernel，带进度） ──
+        total_steps += 1
+        yield StreamEvent.create(
+            StreamEventType.STEP_START,
+            self.name,
+            step=total_steps,
+            max_steps=str(len(kernel_dirs)),
+        )
+
+        from kaggle_knowledge.kernel_processor import (
+            save_skill,
+            get_library_stats,
+        )
+        from kaggle_knowledge.kernel_processor.notebook_parser import (
+            parse_notebook,
+            notebook_to_text,
+            get_kernel_competition,
+        )
+        from kaggle_knowledge.kernel_processor.skill_extractor import (
+            SCAN_PROMPT,
+            DEEP_EXTRACT_PROMPT,
+            EXTRACTION_PROMPT,
+            _parse_llm_response,
+            _extract_json_array,
+            dedup_skills,
+        )
+
+        all_skills = []
+        for i, kdir in enumerate(kernel_dirs, 1):
+            kpath = Path(kdir)
+            if not kpath.is_dir():
+                continue
+
+            ipynb_files = list(kpath.glob("*.ipynb"))
+            if not ipynb_files:
+                yield self._chunk(f"  [{i}/{len(kernel_dirs)}] {kpath.name} — 无 .ipynb，跳过\n")
+                continue
+
+            meta_files = list(kpath.glob("kernel-metadata.json"))
+            competition = (
+                get_kernel_competition(str(meta_files[0]))
+                if meta_files else "unknown"
+            )
+
+            yield self._chunk(
+                f"  [{i}/{len(kernel_dirs)}] {kpath.name} (竞赛: {competition}) 解析中...\n"
+            )
+
+            try:
+                cells = parse_notebook(str(ipynb_files[0]))
+                text = notebook_to_text(cells, max_len=30000)
+            except Exception as e:
+                yield self._chunk(f"    解析 notebook 失败: {e}\n")
+                continue
+
+            # ── 两阶段提取 ──
+            # Phase 1: 亮点扫描（流式调用，实时显示 LLM 输出）
+            scan_prompt = SCAN_PROMPT.replace("{notebook_text}", text)
+            yield self._chunk("    Phase1: 正在扫描 notebook 亮点...\n")
+            highlights = []
+            full_scan = ""
+            try:
+                async for chunk in self.llm.astream_invoke(
+                    messages=[{"role": "user", "content": scan_prompt}],
+                    max_tokens=2048,
+                ):
+                    full_scan += chunk
+                    yield self._chunk(chunk, chunk_type="thinking")
+                yield self._chunk("\n")
+                items = _extract_json_array(full_scan.strip()) or []
+                highlights = [
+                    h for h in items
+                    if isinstance(h, dict) and h.get("highlight")
+                ]
+                if highlights:
+                    yield self._chunk(
+                        f"    Phase1: 识别到 {len(highlights)} 个亮点\n"
+                    )
+            except Exception:
+                pass
+
+            # Phase 2: 深度提取（流式 LLM 调用）
+            if highlights:
+                hl_text = "\n".join(
+                    f"- [{h.get('category','?')}] {h.get('highlight','')}"
+                    for h in highlights
+                )
+                deep_prompt = DEEP_EXTRACT_PROMPT.replace("{highlights}", hl_text)
+                deep_prompt = deep_prompt.replace("{notebook_text}", text)
+            else:
+                yield self._chunk(f"    未识别到亮点，回退到单 pass 提取\n")
+                deep_prompt = EXTRACTION_PROMPT.replace("{notebook_text}", text)
+
+            yield self._chunk("    Phase2: 正在深度提取技巧...\n")
+            full_response = ""
+            try:
+                async for chunk in self.llm.astream_invoke(
+                    messages=[{"role": "user", "content": deep_prompt}],
+                    max_tokens=8192,
+                ):
+                    full_response += chunk
+                    yield self._chunk(chunk, chunk_type="thinking")
+                yield self._chunk("\n")
+            except Exception as e:
+                yield self._chunk(f"\n    LLM 调用失败: {e}\n")
+                continue
+
+            # 解析
+            skills = _parse_llm_response(
+                full_response, kpath.name, competition, keyword
+            )
+            if skills:
+                yield self._chunk(
+                    f"    提取到 {len(skills)} 条技巧: "
+                    + ", ".join(s.get("category", "?") for s in skills)
+                    + "\n"
+                )
+            else:
+                yield self._chunk(f"    未提取到技巧\n")
+            all_skills.extend(skills)
+
+        yield StreamEvent.create(
+            StreamEventType.STEP_FINISH,
+            self.name,
+            step=total_steps,
+        )
+
+        # 去重合并（同 category + 同 name 视为同一技巧，保留最佳版本）
+        if len(all_skills) > 1:
+            before_dedup = len(all_skills)
+            all_skills = dedup_skills(all_skills, llm=self.llm)
+            removed = before_dedup - len(all_skills)
+            if removed > 0:
+                yield self._chunk(f"去重合并: {before_dedup} → {len(all_skills)} 条 (-{removed})\n")
+
+        if not all_skills:
+            result = f"未能从 {len(kernel_dirs)} 个 kernel 中提取到任何技巧。"
+            yield StreamEvent.create(
+                StreamEventType.AGENT_FINISH,
+                self.name,
+                result=result,
+                total_steps=total_steps,
+                max_steps_reached=False,
+            )
+            return
+
+        # ── 阶段 6: 保存技能（按竞赛 slug 分组）──
+        # 清理涉及到的竞赛目录的旧 skill 文件
+        comp_slugs = {s.get("source_competition", keyword) for s in all_skills}
+        for slug in comp_slugs:
+            comp_dir = Path(self.skill_library_dir) / self._sanitize_keyword(slug)
+            if comp_dir.is_dir():
+                old_files = list(comp_dir.glob("skill_*.md"))
+                for f in old_files:
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+                if old_files:
+                    yield self._chunk(
+                        f"  已清理 [{slug}] {len(old_files)} 个旧 skill 文件\n"
+                    )
+
+        total_steps += 1
+        yield StreamEvent.create(
+            StreamEventType.STEP_START,
+            self.name,
+            step=total_steps,
+            max_steps=str(len(all_skills)),
+        )
+
+        saved_paths = []
+        for i, skill in enumerate(all_skills, 1):
+            comp_slug = skill.get("source_competition", keyword)
+            path = save_skill(comp_slug, skill, self.skill_library_dir)
+            saved_paths.append(path)
+            if i % 5 == 0 or i == len(all_skills):
+                yield self._chunk(f"  已保存 {i}/{len(all_skills)} 条技能\n")
+
+        yield StreamEvent.create(
+            StreamEventType.STEP_FINISH,
+            self.name,
+            step=total_steps,
+        )
+
+        # ── 阶段 7: 构建摘要，完成 ──
+        categories = {}
+        for s in all_skills:
+            cat = s.get("category", "未分类")
+            categories[cat] = categories.get(cat, 0) + 1
+
+        comp_dirs = ", ".join(sorted(comp_slugs))
+        summary_lines = [
+            f"\n技能提取完成",
+            f"关键词: {keyword}",
+            f"处理 kernel 数: {len(kernel_dirs)}",
+            f"提取技巧总数: {len(all_skills)}",
+            f"保存位置: {self.skill_library_dir}/[{comp_dirs}]/",
+            f"\n分类统计:",
+        ]
+        for cat, count in sorted(categories.items()):
+            summary_lines.append(f"  - {cat}: {count} 条")
+        summary_lines.append(f"\n已保存文件:")
+        for p in saved_paths[:10]:
+            summary_lines.append(f"  - {Path(p).name}")
+        if len(saved_paths) > 10:
+            summary_lines.append(f"  ... 共 {len(saved_paths)} 个文件")
+
+        stats = get_library_stats(self.skill_library_dir)
+        summary_lines.append(
+            f"\nSkill 库总览: {stats['total_skills']} 条技巧, "
+            f"{stats['keywords']} 个关键词目录"
+        )
+
+        result = "\n".join(summary_lines)
+        yield self._chunk(result + "\n")
+        yield StreamEvent.create(
+            StreamEventType.AGENT_FINISH,
+            self.name,
+            result=result,
+            total_steps=total_steps,
+            max_steps_reached=False,
+        )
+
+    async def _download_kernels_stream(
+        self, keyword: str
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """流式版 Kaggle kernel 下载，在每个子步骤 yield 进度事件。
+
+        复用 _download_kernels_for_keyword 的完整流水线：
+        搜索竞赛 → 获取排行榜 → 下载 kernel
+        """
+        import sys
+        project_root = Path(__file__).parent.parent.parent
+        kg_dir = project_root / "kaggle_knowledge"
+        config_path = kg_dir / "config.json"
+
+        kg_path = str(kg_dir)
+        if kg_path not in sys.path:
+            sys.path.insert(0, kg_path)
+
+        from kaggle_knowledge.utils import load_config, extract_competition_slug
+        from kaggle_knowledge.search_competitions import search_competitions_paginated
+        from kaggle_knowledge.get_leaderboard import get_leaderboard, extract_usernames
+        from kaggle_knowledge.download_kernels import download_competition_kernels
+
+        config = load_config(str(config_path))
+        output_dir = config.get("output_dir", "output")
+        output_dir = str(kg_dir / output_dir)
+        competitions_per_keyword = config.get("competitions_per_keyword", 5)
+        top_users = config.get("top_leaderboard_users", 5)
+        min_score = config.get("min_leaderboard_score")
+        kernels_per_user = config.get("kernels_per_user", 5)
+        min_team_count = config.get("min_team_count", 0)
+        search_max_pages = config.get("search_max_pages", 5)
+        save_csv = config.get("save_csv", {})
+
+        yield self._chunk(f"搜索关键词 '{keyword}' 的 Kaggle 竞赛...\n")
+        competitions = search_competitions_paginated(
+            keyword,
+            max_competitions=competitions_per_keyword,
+            save_csv_flag=save_csv.get("competitions", True),
+            output_dir=output_dir,
+            min_team_count=min_team_count,
+            max_pages=search_max_pages,
+        )
+        if not competitions:
+            yield self._chunk(f"未找到与 '{keyword}' 相关的竞赛\n")
+            yield StreamEvent.create(
+                StreamEventType.AGENT_FINISH,
+                self.name,
+                kernel_dirs=[],
+            )
+            return
+
+        yield self._chunk(f"找到 {len(competitions)} 个竞赛\n")
+
+        for idx, comp in enumerate(competitions, 1):
+            ref = comp.get("ref", "")
+            slug = extract_competition_slug(ref)
+            name = comp.get("title", slug)
+
+            yield self._chunk(
+                f"  [{idx}/{len(competitions)}] {name} ({slug}) — 获取排行榜...\n"
+            )
+
+            leaderboard = get_leaderboard(
+                slug,
+                top_users=top_users,
+                min_score=min_score,
+                save_csv_flag=save_csv.get("leaderboard", True),
+                output_dir=output_dir,
+            )
+            if not leaderboard:
+                yield self._chunk(f"    排行榜为空，跳过\n")
+                continue
+
+            usernames = extract_usernames(leaderboard)
+            yield self._chunk(
+                f"    排行榜前 {len(usernames)} 名: {', '.join(usernames[:3])}... — 下载 kernel\n"
+            )
+
+            download_competition_kernels(
+                slug, name, usernames,
+                keyword=keyword,
+                max_kernels_per_user=kernels_per_user,
+                base_output_dir=output_dir,
+                save_csv_flag=save_csv.get("kernels_list", True),
+            )
+
+        yield self._chunk(f"关键词 '{keyword}' 全部下载完成\n")
+
+        # Find kernel dirs after download
+        kernel_dirs = self._find_kernel_dirs(keyword)
+        yield StreamEvent.create(
+            StreamEventType.AGENT_FINISH,
+            self.name,
+            kernel_dirs=kernel_dirs,
+        )
+
+    @staticmethod
+    def _chunk(text: str, chunk_type: str = "text") -> StreamEvent:
+        """创建文本进度事件"""
+        return StreamEvent.create(
+            StreamEventType.LLM_CHUNK,
+            "",
+            chunk=text,
+            chunk_type=chunk_type,
+        )
+
     def _download_kernels_for_keyword(self, keyword: str):
         """调用 Kaggle 工具下载指定关键词的竞赛 kernel。
 
@@ -175,7 +707,7 @@ class KernelSkillAgent(Agent):
             sys.path.insert(0, kg_path)
 
         from kaggle_knowledge.utils import load_config, extract_competition_slug
-        from kaggle_knowledge.search_competitions import batch_search_competitions
+        from kaggle_knowledge.search_competitions import search_competitions_paginated
         from kaggle_knowledge.get_leaderboard import get_leaderboard, extract_usernames
         from kaggle_knowledge.download_kernels import download_competition_kernels
 
@@ -187,18 +719,19 @@ class KernelSkillAgent(Agent):
         min_score = config.get("min_leaderboard_score")
         kernels_per_user = config.get("kernels_per_user", 5)
         min_team_count = config.get("min_team_count", 0)
+        search_max_pages = config.get("search_max_pages", 5)
         save_csv = config.get("save_csv", {})
 
         print(f"\n  [下载] 搜索关键词 '{keyword}' 的竞赛...")
-        competitions_dict = batch_search_competitions(
-            [keyword],
+        competitions = search_competitions_paginated(
+            keyword,
             max_competitions=competitions_per_keyword,
             save_csv_flag=save_csv.get("competitions", True),
             output_dir=output_dir,
             min_team_count=min_team_count,
+            max_pages=search_max_pages,
         )
 
-        competitions = competitions_dict.get(keyword, [])
         if not competitions:
             print(f"  [下载] 未找到与 '{keyword}' 相关的竞赛")
             return
@@ -261,38 +794,50 @@ class KernelSkillAgent(Agent):
         return keyword, kernel_dirs
 
     def _find_kernel_dirs(self, keyword: str) -> List[str]:
-        """Auto-discover kernel directories under the output base dir for a keyword.
+        """递归搜索 keyword 目录下所有 kernel 目录。
 
-        Searches under kaggle_knowledge/output/<keyword>/kernels/
+        kernel 目录的判断标准：包含 kernel-metadata.json 文件。
+        支持多层嵌套结构: output/<keyword>/<competition>/kernels/<kernel_dir>
+
         Tries: exact keyword → sanitized version → substring match
         """
         kw_safe = self._sanitize_keyword(keyword)
         base = Path(self.kernels_base_dir)
 
-        def _subdirs(path):
-            if path.is_dir():
-                return [str(d) for d in path.iterdir() if d.is_dir()]
+        def _find_keyword_root():
+            """找到 keyword 对应的根目录"""
+            # Try exact keyword as-is
+            p = base / keyword
+            if p.is_dir():
+                return p
+            # Try sanitized version
+            p = base / kw_safe
+            if p.is_dir():
+                return p
+            # Try substring match
+            if base.is_dir():
+                for d in base.iterdir():
+                    if d.is_dir() and (keyword in d.name or kw_safe in d.name.lower()):
+                        return d
+            return None
+
+        def _find_kernel_dirs_recursive(root: Path) -> List[str]:
+            """递归查找所有包含 kernel-metadata.json 的目录"""
+            results = []
+            try:
+                for item in root.rglob("kernel-metadata.json"):
+                    kernel_dir = str(item.parent)
+                    if kernel_dir not in results:
+                        results.append(kernel_dir)
+            except Exception:
+                pass
+            return results
+
+        root = _find_keyword_root()
+        if root is None:
             return []
 
-        # Try exact keyword as-is (handles "machine learning" with space)
-        result = _subdirs(base / keyword / "kernels")
-        if result:
-            return result
-
-        # Try sanitized version ("machine_learning")
-        result = _subdirs(base / kw_safe / "kernels")
-        if result:
-            return result
-
-        # Try to find partial match
-        if base.is_dir():
-            for d in base.iterdir():
-                if d.is_dir() and (keyword in d.name or kw_safe in d.name.lower()):
-                    result = _subdirs(d / "kernels")
-                    if result:
-                        return result
-
-        return []
+        return _find_kernel_dirs_recursive(root)
 
     def _get_top_skills(self) -> int:
         """从 config.json 读取 top_skills 配置，默认 5"""
@@ -303,6 +848,26 @@ class KernelSkillAgent(Agent):
             return int(config.get("top_skills", 5))
         except Exception:
             return 5
+
+    def _get_min_skills(self) -> int:
+        """从 config.json 读取 min_skills_per_keyword 配置，默认 10"""
+        try:
+            from kaggle_knowledge.utils import load_config
+            kg_dir = Path(__file__).parent.parent.parent / "kaggle_knowledge"
+            config = load_config(str(kg_dir / "config.json"))
+            return int(config.get("min_skills_per_keyword", 10))
+        except Exception:
+            return 10
+
+    def _get_min_kernels(self) -> int:
+        """从 config.json 读取 min_kernels_per_keyword 配置，默认 3"""
+        try:
+            from kaggle_knowledge.utils import load_config
+            kg_dir = Path(__file__).parent.parent.parent / "kaggle_knowledge"
+            config = load_config(str(kg_dir / "config.json"))
+            return int(config.get("min_kernels_per_keyword", 3))
+        except Exception:
+            return 3
 
     @staticmethod
     def _sanitize_keyword(keyword: str) -> str:

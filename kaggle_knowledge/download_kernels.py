@@ -5,6 +5,7 @@
 
 from typing import List, Dict, Optional
 import os
+import re
 from pathlib import Path
 from utils import (
     run_kaggle_command, parse_csv_data, save_csv,
@@ -155,7 +156,10 @@ def download_competition_kernels(
         for kernel_idx, kernel in enumerate(kernels, 1):
             kernel_ref = kernel.get("ref", "")
             kernel_name = kernel.get("title", "unknown")
-            
+            # Sanitize: remove Windows-invalid filename characters
+            kernel_name = re.sub(r'[<>:"/\\|?*]', '_', kernel_name)
+            kernel_name = kernel_name.strip().rstrip('.')
+
             # 为每个kernel创建独立目录
             kernel_dir = os.path.join(download_path, f"{kernel_idx}_{kernel_name}")
             

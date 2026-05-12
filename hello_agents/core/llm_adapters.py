@@ -212,18 +212,19 @@ class OpenAIAdapter(BaseLLMAdapter):
             for chunk in response:
                 if chunk.choices and len(chunk.choices) > 0:
                     delta = chunk.choices[0].delta
-                    
-                    # 提取内容
-                    if delta.content:
-                        collected_content.append(delta.content)
-                        yield delta.content
-                    
-                    # Thinking model的推理过程
+
+                    # Thinking model的推理过程（优先 yield）
                     if self._is_thinking_model(self.model):
                         if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                             if reasoning_content is None:
                                 reasoning_content = ""
                             reasoning_content += delta.reasoning_content
+                            yield delta.reasoning_content
+
+                    # 提取内容
+                    if delta.content:
+                        collected_content.append(delta.content)
+                        yield delta.content
 
                 # 提取usage（流式最后一个chunk可能包含）
                 if hasattr(chunk, 'usage') and chunk.usage:
@@ -269,17 +270,18 @@ class OpenAIAdapter(BaseLLMAdapter):
                 if chunk.choices and len(chunk.choices) > 0:
                     delta = chunk.choices[0].delta
 
-                    # 提取内容
-                    if delta.content:
-                        collected_content.append(delta.content)
-                        yield delta.content
-
-                    # Thinking model的推理过程
+                    # Thinking model的推理过程（优先 yield，避免用户干等）
                     if self._is_thinking_model(self.model):
                         if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                             if reasoning_content is None:
                                 reasoning_content = ""
                             reasoning_content += delta.reasoning_content
+                            yield delta.reasoning_content
+
+                    # 提取内容
+                    if delta.content:
+                        collected_content.append(delta.content)
+                        yield delta.content
 
                 # 提取usage（流式最后一个chunk可能包含）
                 if hasattr(chunk, 'usage') and chunk.usage:
@@ -830,11 +832,12 @@ class DeepSeekAdapter(BaseLLMAdapter):
             for chunk in response:
                 if chunk.choices:
                     delta = chunk.choices[0].delta
-                    if getattr(delta, "content", None):
-                        yield delta.content
                     rc = getattr(delta, "reasoning_content", None)
                     if rc:
                         reasoning_content = (reasoning_content or "") + rc
+                        yield rc  # 推理过程实时输出
+                    if getattr(delta, "content", None):
+                        yield delta.content
                 if getattr(chunk, "usage", None):
                     usage = {
                         "prompt_tokens": chunk.usage.prompt_tokens,
@@ -872,11 +875,12 @@ class DeepSeekAdapter(BaseLLMAdapter):
             async for chunk in response:
                 if chunk.choices:
                     delta = chunk.choices[0].delta
-                    if getattr(delta, "content", None):
-                        yield delta.content
                     rc = getattr(delta, "reasoning_content", None)
                     if rc:
                         reasoning_content = (reasoning_content or "") + rc
+                        yield rc  # 推理过程实时输出，避免用户干等
+                    if getattr(delta, "content", None):
+                        yield delta.content
                 if getattr(chunk, "usage", None):
                     usage = {
                         "prompt_tokens": chunk.usage.prompt_tokens,

@@ -111,24 +111,30 @@ class TaskTool(Tool):
             
             # 3. 创建工具过滤器
             tool_filter = self._create_tool_filter(tool_filter_type)
-            
-            # 4. 运行子代理（隔离模式）
+
+            # 4. kernel_skill 类型走流式路径（调用 arun_stream 实时显示进度）
+            if agent_type == "kernel_skill" and hasattr(subagent, 'arun_stream'):
+                return self._run_kernel_skill_streaming(
+                    subagent, task, agent_type, start_time
+                )
+
+            # 5. 运行子代理（隔离模式，通用路径）
             print(f"\n[SubAgent-{agent_type}] 开始执行: {task[:50]}...")
-            
+
             result = subagent.run_as_subagent(
                 task=task,
                 tool_filter=tool_filter,
                 return_summary=True,
                 max_steps_override=max_steps
             )
-            
-            # 5. 计算执行时间
+
+            # 6. 计算执行时间
             elapsed_ms = int((time.time() - start_time) * 1000)
-            
-            # 6. 返回标准 ToolResponse
+
+            # 7. 返回标准 ToolResponse
             if result["success"]:
                 print(f"[SubAgent-{agent_type}] 完成 ({result['metadata']['steps']} 步, {result['metadata']['duration_seconds']}秒)")
-                
+
                 return ToolResponse.success(
                     text=f"[SubAgent-{agent_type}] 任务完成\n\n{result['summary']}",
                     data={
@@ -140,7 +146,7 @@ class TaskTool(Tool):
                 )
             else:
                 print(f"[SubAgent-{agent_type}] 未完成: {result['metadata'].get('error', '未知错误')}")
-                
+
                 return ToolResponse.partial(
                     text=f"[SubAgent-{agent_type}] 任务未完全完成\n\n{result['summary']}",
                     data={
@@ -184,3 +190,79 @@ class TaskTool(Tool):
             # 默认无过滤
             return None
 
+    def _run_kernel_skill_streaming(
+        self, subagent, task: str, agent_type: str, start_time: float
+    ) -> ToolResponse:
+        """对 kernel_skill 类型子代理使用流式执行，实时显示进度。
+
+        通过 arun_stream() yield 事件并在控制台实时打印，
+        同时收集最终结果构建 ToolResponse。
+        """
+        import asyncio
+        import time as _time_module
+        from ...core.streaming import StreamEventType
+
+        final_result = ""
+        step_count = 0
+        error_msg = None
+
+        async def _stream():
+            nonlocal final_result, step_count, error_msg
+            try:
+                async for event in subagent.arun_stream(task):
+                    etype = event.type
+                    if etype == StreamEventType.AGENT_START:
+                        kw = event.data.get("input_text", task)
+                        print(f"\n{'='*50}")
+                        print(f"[SubAgent-{agent_type}] 流式启动: {kw[:60]}")
+                        print(f"{'='*50}")
+                    elif etype == StreamEventType.STEP_START:
+                        step_count += 1
+                        s = event.data.get("step", "?")
+                        m = event.data.get("max_steps", "?")
+                        print(f"\n── [{agent_type}] 步骤 {s}/{m} ──")
+                    elif etype == StreamEventType.STEP_FINISH:
+                        print(f"── [{agent_type}] 步骤完成 ──")
+                    elif etype == StreamEventType.LLM_CHUNK:
+                        chunk = event.data.get("chunk", "")
+                        if chunk:
+                            print(chunk, end="", flush=True)
+                    elif etype == StreamEventType.AGENT_FINISH:
+                        final_result = event.data.get("result", "")
+                    elif etype == StreamEventType.ERROR:
+                        error_msg = event.data.get("error", "未知错误")
+                        print(f"\n❌ [{agent_type}] 错误: {error_msg}")
+            except Exception as e:
+                error_msg = str(e)
+                print(f"\n❌ [{agent_type}] 流式执行异常: {e}")
+
+        asyncio.run(_stream())
+
+        elapsed_ms = int((_time_module.time() - start_time) * 1000)
+
+        if error_msg:
+            return ToolResponse.error(
+                code=ToolErrorCode.EXECUTION_ERROR,
+                message=f"[SubAgent-{agent_type}] 执行失败: {error_msg}"
+            )
+
+        if final_result:
+            return ToolResponse.success(
+                text=f"[SubAgent-{agent_type}] 流式任务完成\n\n{final_result}",
+                data={
+                    "agent_type": agent_type,
+                    "task": task,
+                    "steps": step_count,
+                },
+                stats={"time_ms": elapsed_ms}
+            )
+        else:
+            return ToolResponse.partial(
+                text=f"[SubAgent-{agent_type}] 流式任务结束（无结果）",
+                data={
+                    "agent_type": agent_type,
+                    "task": task,
+                    "steps": step_count,
+                },
+                stats={"time_ms": elapsed_ms}
+            )

@@ -48,17 +48,24 @@ def _render_skill_md(skill_data: Dict, created: str) -> str:
     """将 skill dict 渲染为 SKILL.md 格式（YAML frontmatter + Markdown body）"""
     name = skill_data.get("name", "unnamed")
     description = skill_data.get("description", "")
-    problems_solved = skill_data.get("problems_solved", "")
+    use_case = skill_data.get("use_case", "")
     keyword = skill_data.get("keyword", "")
     category = skill_data.get("category", "")
+    competition_type = skill_data.get("competition_type", "")
+    estimated_impact = skill_data.get("estimated_impact", "")
     source_kernel = skill_data.get("source_kernel", "")
     source_competition = skill_data.get("source_competition", "")
     technique = skill_data.get("technique", "")
     code_pattern = skill_data.get("code_pattern", "")
-    when_to_use = skill_data.get("when_to_use", "")
     notes = skill_data.get("notes", "")
 
-    # 转义 YAML 中的特殊字符
+    # Backward compat: merge old fields into use_case if needed
+    if not use_case:
+        ps = skill_data.get("problems_solved", "")
+        wtu = skill_data.get("when_to_use", "")
+        if ps or wtu:
+            use_case = f"解决: {ps} | 场景: {wtu}" if ps and wtu else (ps or wtu)
+
     def yaml_str(s):
         if any(c in s for c in ['"', "'", ":", "#", "{", "}", "[", "]", ",", "&", "*", "?", "|", "-", "<", ">", "=", "!", "%", "@", "`"]):
             return f'"{s.replace(chr(34), chr(92)+chr(34))}"'
@@ -67,9 +74,11 @@ def _render_skill_md(skill_data: Dict, created: str) -> str:
     frontmatter = f"""---
 name: {name}
 description: {yaml_str(description)}
-problems_solved: {yaml_str(problems_solved)}
+use_case: {yaml_str(use_case)}
 keyword: {keyword}
 category: {category}
+competition_type: {competition_type}
+estimated_impact: {estimated_impact}
 source_kernel: {source_kernel}
 source_competition: {source_competition}
 created: {created}
@@ -77,14 +86,11 @@ created: {created}
 
 # {name.replace('-', ' ').title()}
 
-## 可解决的问题
-{problems_solved if problems_solved else '通用机器学习问题'}
+## 用途与场景
+{use_case if use_case else '通用竞赛问题'}
 
 ## 技巧说明
 {technique}
-
-## 适用场景
-{when_to_use if when_to_use else '通用场景'}
 
 ## 代码模式
 ```python
@@ -230,11 +236,21 @@ def search_skills(
             content = md_file.read_text(encoding="utf-8")
             frontmatter, body = _parse_skill_md(content)
             if frontmatter:
+                # Backward compat: 旧文件用 problems_solved + when_to_use
+                uc = frontmatter.get("use_case", "")
+                if not uc:
+                    ps = frontmatter.get("problems_solved", "")
+                    wtu = frontmatter.get("when_to_use", "")
+                    uc = f"解决: {ps} | 场景: {wtu}" if ps and wtu else (ps or wtu)
                 skills.append(
                     {
                         "name": frontmatter.get("name", md_file.stem),
                         "description": frontmatter.get("description", ""),
                         "category": frontmatter.get("category", ""),
+                        "use_case": uc,
+                        "estimated_impact": frontmatter.get("estimated_impact", ""),
+                        "competition_type": frontmatter.get("competition_type", ""),
+                        "source_kernel": frontmatter.get("source_kernel", ""),
                         "body": body,
                         "file": str(md_file),
                     }
@@ -242,8 +258,10 @@ def search_skills(
         except Exception:
             continue
 
-    # 按创建时间倒序（文件名排序 ≈ 创建顺序），返回最新的 k 条
-    return skills[-top_k:][::-1] if len(skills) > top_k else skills[::-1]
+    # 按影响力排序（高 > 中 > 低 > 无），同影响力按文件序（≈时间倒序）
+    impact_order = {"高": 0, "中": 1, "低": 2}
+    skills.sort(key=lambda s: impact_order.get(s.get("estimated_impact", ""), 3))
+    return skills[:top_k]
 
 
 def _parse_skill_md(content: str):
@@ -282,13 +300,25 @@ def build_skill_context(
 
     lines = [f"## 历史竞赛技巧库 (关键词: {keyword})"]
     for i, s in enumerate(skills, 1):
-        lines.append(f"\n### 技巧{i}: {s['name']}")
+        impact = s.get('estimated_impact', '')
+        impact_tag = f" [{impact}]" if impact else ""
+        ctype = s.get('competition_type', '')
+        ctype_tag = f" ({ctype})" if ctype else ""
+        lines.append(f"\n### 技巧{i}: {s['name']}{impact_tag}{ctype_tag}")
         lines.append(f"分类: {s.get('category', 'N/A')}")
-        lines.append(f"描述: {s['description']}")
-        # 保留 body 但截断到 1000 字符
+        desc = s.get('description', '')
+        if desc:
+            lines.append(f"描述: {desc}")
+        lines.append(f"用途: {s.get('use_case', '') or s.get('description', '')}")
+        # 保留 body 但截断到 2000 字符，优先保留完整代码段
         body = s["body"]
-        if len(body) > 1000:
-            body = body[:1000] + "\n...(已截断)"
+        if len(body) > 2000:
+            # 尝试在代码块之后截断
+            code_end = body.rfind("```", 0, 2000)
+            if code_end > 1500 and body[code_end - 1:code_end + 3].count("```") <= 1:
+                body = body[:code_end + 4] + "\n...(已截断)"
+            else:
+                body = body[:2000] + "\n...(已截断)"
         lines.append(body)
 
     return "\n".join(lines)
