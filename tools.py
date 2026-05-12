@@ -16,7 +16,13 @@ from checkpoint_manager import checkpoint_manager  # ★ 检查点管理器
 
 from project_config import PROJECT_ROOT
 
-# import cleanlab
+from data_quality_tools import (
+    ApplyCleanlabIssueFixTool,
+    CleanlabDiagnoseTool,
+    DataQualityLoopPolicyTool,
+    PrepareCleanlabModelSourceTool,
+    TabularDataRepairTool,
+)
 
 
 def _resolve_path(path: str) -> str:
@@ -511,10 +517,16 @@ class ListCheckpointsTool(Tool):
 # ──────────────────────────────────────────────
 # 兼容旧导出
 # ──────────────────────────────────────────────
-read_file        = ReadFileTool()
-write_file       = WriteFileTool()
-run_training     = RunTrainingTool()
-run_shell        = RunShellTool()
-save_checkpoint  = SaveCheckpointTool()   # ★ 新增
-rollback         = RollbackTool()          # ★ 新增
-list_checkpoints = ListCheckpointsTool()   # ★ 新增
+read_file                 = ReadFileTool()
+write_file                = WriteFileTool()
+run_training              = RunTrainingTool()
+run_shell                 = RunShellTool()
+save_checkpoint           = SaveCheckpointTool()
+rollback                  = RollbackTool()
+list_checkpoints          = ListCheckpointsTool()
+prepare_cleanlab_model_source = PrepareCleanlabModelSourceTool()
+prepare_cleanlab_baseline     = prepare_cleanlab_model_source  # backward-compatible alias
+cleanlab_diagnose             = CleanlabDiagnoseTool()
+data_quality_loop_policy      = DataQualityLoopPolicyTool()
+apply_cleanlab_issue_fix      = ApplyCleanlabIssueFixTool()
+tabular_data_repair       = TabularDataRepairTool()
