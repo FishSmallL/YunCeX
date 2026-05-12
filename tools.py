@@ -338,6 +338,7 @@ class RunShellTool(Tool):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                cwd=cwd,
             )
             output = result.stdout + result.stderr
             return ToolResponse.success(
@@ -383,7 +384,7 @@ class RunShellTool(Tool):
         return max(1, timeout)
 
     def _prepare_execution(self, raw_command: str, parameters: Dict[str, Any]) -> tuple[str, Optional[str], str]:
-        command = self._strip_shell_line_continuations(raw_command)
+        command = self._normalize_shell_command(raw_command)
         cwd = parameters.get("cwd") or parameters.get("workdir")
 
         cd_cwd, command_without_cd = self._extract_leading_cd(command)
@@ -399,9 +400,23 @@ class RunShellTool(Tool):
 
         policy_command = self._build_policy_command(command, resolved_cwd)
         return command, resolved_cwd, policy_command
+    
+    def _normalize_shell_command(self, command: str) -> str:
+        """Normalize common model-generated shell formatting glitches.
+
+        LLM tool arguments occasionally contain hard line breaks in the middle of
+        absolute paths (for example ``/home/user/project\n/script.py``) or append
+        ``2>&1`` even though this tool already captures stderr. Leaving either
+        artifact in place can make Python look for the script from the wrong
+        directory or make policy reject an otherwise safe command.
+        """
+        command = command.replace("\\\r\n", " ").replace("\\\n", " ")
+        command = re.sub(r"(?<=\S)\r?\n\s*(?=/)", "", command)
+        command = re.sub(r"\s+2>\s*&\s*1\s*$", "", command)
+        return command.replace("\r\n", " ").replace("\n", " ").strip()
 
     def _strip_shell_line_continuations(self, command: str) -> str:
-        return command.replace("\\\r\n", " ").replace("\\\n", " ").strip()
+        return self._normalize_shell_command(command)
 
     def _extract_leading_cd(self, command: str) -> tuple[Optional[str], str]:
         match = re.match(r"^\s*cd\s+((?:'[^']*')|(?:\"[^\"]*\")|[^&]+?)\s*&&\s*(.+)$", command, flags=re.DOTALL)

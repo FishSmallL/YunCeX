@@ -157,7 +157,7 @@ executor.add_tool(
     build_data_quality_agent_tool(
         llm=llm,
         auxiliary_tools=[read_file, write_file, run_training, run_shell],
-        default_data_loop_max_iterations=2,
+        default_data_loop_max_iterations=4,
     )
 )
 
