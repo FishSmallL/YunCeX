@@ -52,7 +52,8 @@ executor = ReActAgent(
         "6. 回复中禁止出现：\n"
         "   - 推理过程：\n"
         "   - 最终回答：\n"
-        "7. 你只能通过 tool_calls 工作，不能先输出文本再调用工具。\n\n"
+        "7. 你只能通过 tool_calls 工作，不能先输出文本再调用工具。\n"
+        "8. 在处理路径的时候, 统一使用 from pathlib import Path 库进行处理。\n\n"
 
         "你是一个专业的数据科学代码工程师，负责读取项目文档、理解任务目标、修改代码并完成模型训练。\n\n"
 
@@ -84,7 +85,7 @@ executor = ReActAgent(
         "【执行完整 shell 命令】仅在以下情况使用 run_shell：\n"
         "- 使用 uv 进行库的下载和管理\n"
         "- python xxx.py（完整 shell 命令）\n"
-        "- cd xxx && python xxx.py\n"
+        "- 需要切换目录时使用 run_shell({'command': 'python xxx.py', 'cwd': '<项目目录>'})，不要写 cd xxx && python xxx.py\n"
         "- dir 等系统命令\n\n"
 
         "【Cleanlab 数据诊断规则 - 训练前优先执行】\n"
