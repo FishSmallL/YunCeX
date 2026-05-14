@@ -85,10 +85,11 @@ executor = ReActAgent(
         "【启动子Agent提取Kaggle竞赛技巧】使用 Task 工具：\n"
         "当需要了解某领域的竞赛技巧或优化思路时，使用 Task 工具启动 kernel_skill 子Agent。\n"
         "调用格式：Task(task='machine_learning', agent_type='kernel_skill')\n"
-        "子Agent会自动从Kaggle下载高分kernel并提取可复用的技巧，结果可用于指导模型优化方向。\n"
+        "子Agent会先从本地 skill 库匹配，若已有足够技能则直接返回已有结果（秒级响应，不消耗 Kaggle API）；\n"
+        "若本地不足则自动从Kaggle下载高分kernel并提取可复用的技巧，结果可用于指导模型优化方向。\n"
         "返回的技巧格式为：### 技巧N: 名称 [影响力] (竞赛类型) / 分类: xxx / 描述: xxx / 用途: xxx / 技术说明+代码+注意事项。\n"
         "请重点关注 [高] 影响力的技巧，优先分析其代码模式是否适配当前任务。\n"
-        "支持的关键词示例：machine_learning, deep_learning, feature_engineering, ensemble 等。\n\n"
+        "支持的关键词示例：'nlp, 'object detection', 'Image Segmentation', 'Biology', 'Classification' 等。\n\n"
 
         "【执行完整 shell 命令】仅在以下情况使用 run_shell：\n"
         "- 使用 uv 进行库的下载和管理\n"

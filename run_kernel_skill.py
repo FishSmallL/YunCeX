@@ -38,7 +38,6 @@ from kaggle_knowledge.kernel_processor import (
     parse_notebook,
     notebook_to_text,
     get_kernel_competition,
-    extract_skills_from_notebooks_batch,
     save_skill,
     match_keyword,
     search_skills,
@@ -164,13 +163,13 @@ def run_extraction(keyword: str, kernel_dirs: list):
 
         t_parse = _now()
         cells = parse_notebook(str(ipynb_files[0]))
-        text = notebook_to_text(cells, max_len=8000)
+        text = notebook_to_text(cells, max_len=30000)
         print(f"  解析: {len(cells)} cells → {len(text)} chars 压缩文本")
         print(f"  解析耗时: {_fmt_seconds(_now() - t_parse)}")
 
-        from kaggle_knowledge.kernel_processor.skill_extractor import extract_skills_from_notebook
+        from kaggle_knowledge.kernel_processor.skill_extractor import extract_skills_2pass
         t_extract = _now()
-        skills = extract_skills_from_notebook(
+        skills = extract_skills_2pass(
             text, kpath.name, competition, keyword, llm
         )
         print(f"  提取: {len(skills)} 条技巧")

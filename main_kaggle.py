@@ -19,6 +19,27 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 
+# ── 日志文件 ──
+import datetime as _dt
+_log_file = None
+def _tee_write(text):
+    """同时输出到终端和日志文件"""
+    global _log_file
+    if _log_file is None:
+        log_dir = Path(__file__).parent / "logs"
+        log_dir.mkdir(exist_ok=True)
+        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        _log_file = open(log_dir / f"kaggle_{ts}.log", "w", encoding="utf-8")
+    sys.__stdout__.write(text)
+    if _log_file:
+        _log_file.write(text)
+        _log_file.flush()
+
+class _TeeWriter:
+    def write(self, s): _tee_write(s)
+    def flush(self): pass
+sys.stdout = _TeeWriter()
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -118,14 +139,67 @@ async def run_direct():
             error = event.data.get("error", "未知错误")
             print(f"\n❌ [错误]: {error}")
 
+    # ── 模拟 main.py 流程：search_skills + build_skill_context ──
+    print(f"\n\n{'='*60}")
+    print(f"  🔍 模拟 main.py Agent 视图：从 Skill 库搜索")
+    print(f"{'='*60}")
+    _simulate_skill_lookup(keyword)
+
+
+def _simulate_skill_lookup(keyword: str):
+    """模拟 main.py 中 Agent 收到 Task 工具返回后的视图：
+    match_keyword → search_skills → build_skill_context
+    """
+    from kaggle_knowledge.kernel_processor.skill_library import (
+        search_skills, build_skill_context, list_keywords, get_library_stats,
+    )
+    from kaggle_knowledge.kernel_processor import match_keyword
+
+    library_dir = str(Path(__file__).parent / "kaggle_knowledge" / "skill_library")
+
+    # 1. 展示库统计
+    stats = get_library_stats(library_dir)
+    print(f"\nSkill 库概况: {stats['keywords']} 个关键词目录, {stats['total_skills']} 条技能")
+    if stats["keywords"] > 0:
+        keywords = list_keywords(library_dir)
+        print(f"可用关键词: {', '.join(keywords)}")
+
+    # 2. match_keyword
+    matched = match_keyword(keyword, library_dir)
+    if not matched:
+        print(f"\n❌ 关键词 '{keyword}' 未匹配到任何已有目录")
+        print(f"   (main.py Agent 会触发下载+提取流程)")
+        return
+
+    print(f"\n✅ 匹配到目录: '{matched}'")
+
+    # 3. search_skills (top_k=5, 同 main.py 中 _get_top_skills 默认值)
+    top_k = 5
+    skills = search_skills(matched, library_dir, top_k=top_k)
+    print(f"\n── search_skills(top_k={top_k}) 返回 {len(skills)} 条 ──")
+    for i, s in enumerate(skills, 1):
+        impact = s.get('estimated_impact', '')
+        impact_tag = f" [{impact}]" if impact else ""
+        ctype = s.get('competition_type', '')
+        ctype_tag = f" ({ctype})" if ctype else ""
+        print(f"  [{i}] {s['name']}{impact_tag}{ctype_tag}")
+        print(f"      分类: {s.get('category', 'N/A')}")
+        print(f"      描述: {s.get('description', '')[:100]}")
+
+    # 4. build_skill_context（这就是 main.py Agent 收到的最终文本）
+    ctx = build_skill_context(matched, library_dir, top_k=top_k)
+    print(f"\n── build_skill_context(top_k={top_k}) 输出（前 500 字）──")
+    print(ctx[:500])
+    if len(ctx) > 500:
+        print(f"... (共 {len(ctx)} 字)")
+    print(f"\n👆 这就是 main.py 中 Agent 调用 Task(task='{keyword}', agent_type='kernel_skill') 会收到的内容")
+
 
 # ════════════════════════════════════════════════════════════════
 # 模式 2: 默认  全链路 ReActAgent → Task 工具 → KernelSkillAgent
 # ════════════════════════════════════════════════════════════════
 
 async def run_full_chain():
-    from project_config import PROJECT_ROOT as _PR, DATASET_ROOT as _DR
-
     llm = HelloAgentsLLM()
     config = Config()
 
@@ -147,7 +221,7 @@ async def run_full_chain():
             f"请使用 Task 工具启动 kernel_skill 子Agent：\n"
             f"  Task(task='{keyword}', agent_type='kernel_skill')\n"
             "该子Agent会自动搜索Kaggle竞赛、下载高分kernel、"
-            "用LLM提取可复用的ML技巧并保存到skill_library。\n\n"
+            "用LLM提取可复用的技巧并保存到skill_library。\n\n"
 
             "执行步骤：\n"
             f"1. 调用 Task(task='{keyword}', agent_type='kernel_skill') 提取技巧\n"

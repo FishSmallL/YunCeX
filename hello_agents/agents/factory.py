@@ -191,12 +191,13 @@ def _get_system_prompt_for_type(agent_type: str) -> str:
 """,
         "kernel_skill": """你是一个竞赛技巧提取专家。
 
-目标：从 Kaggle kernel notebook 中提取可复用的 ML 技巧。
+目标：从 Kaggle kernel notebook 中提取可复用的技巧。
 
 规则：
 - 解析 notebook 内容，重点关注：数据预处理、特征工程、模型架构、集成策略、设计技巧
 - 每条技巧精简描述（≤200字），附带关键代码片段
 - 只提取可迁移的通用技巧，忽略竞赛特定细节
+- 重要：没什么技术的知识直接跳过，例如安装wheel，安装包等，只专注于技巧
 - 输出结构化 JSON，保存到 skill_library/
 """,
     }

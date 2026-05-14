@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(\"D:\\\\a\\\\envs\\\\cameltrack\\\\python.exe\" run_kernel_skill.py --dry-run)",
-      "Bash(\"D:\\\\a\\\\envs\\\\cameltrack\\\\python.exe\" test_json_parse.py)"
+      "Bash(\"D:\\\\a\\\\envs\\\\cameltrack\\\\python.exe\" test_json_parse.py)",
+      "Bash(python test_json_parse.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('hello_agents/agents/kernel_skill_agent.py',encoding='utf-8'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")"
     ]
   }
 }

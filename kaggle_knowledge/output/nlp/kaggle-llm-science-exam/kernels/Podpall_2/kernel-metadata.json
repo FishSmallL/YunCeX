@@ -1,0 +1,42 @@
+{
+  "id": "podpall/3rd-place-full-inference",
+  "id_no": 44557453,
+  "title": "3rd place: full inference",
+  "code_file": "3rd-place-full-inference.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "keywords": [
+    "gpu"
+  ],
+  "dataset_sources": [
+    "jisukim8873/bge-small-en-v1-5",
+    "radek1/deberta-v3-large-hf-weights",
+    "podpall/deberta-v14-pretrain2",
+    "podpall/electra-v14-add70k",
+    "podpall/embeddings-naming",
+    "noi031/google-electra-large-discriminator",
+    "podpall/ibm-reranker-tuned-2",
+    "simjeg/platypus2-70b-instruct-part1",
+    "simjeg/platypus2-70b-instruct-part2",
+    "podpall/roberta-v14-add70k",
+    "marshal02/robertalarge",
+    "inversion/sentence-transformers-222",
+    "podpall/wiki-pyarrow",
+    "podpall/78be3bf5",
+    "podpall/789d60d3",
+    "cpmpml/xwin-lm-70b-v0-1-part1",
+    "cpmpml/xwin-lm-70b-v0-1-part2"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [
+    "kaggle-llm-science-exam"
+  ],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-private-byod/python@sha256:85f560cfbe1be66639fc12b29d36aa706790633c7ed069ee5aab233920f0daab",
+  "machine_shape": "NvidiaTeslaT4",
+  "leaderboard_rank": 3
+}

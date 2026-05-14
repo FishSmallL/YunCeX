@@ -111,11 +111,12 @@ def download_competition_kernels(
     keyword: str = "",
     max_kernels_per_user: int = 5,
     base_output_dir: str = "output",
-    save_csv_flag: bool = True
+    save_csv_flag: bool = True,
+    user_ranks: Optional[Dict[str, int]] = None,
 ) -> bool:
     """
     下载竞赛中多个用户的kernel
-    
+
     Args:
         competition_slug: 竞赛slug
         competition_name: 竞赛名称（用于目录命名）
@@ -124,7 +125,8 @@ def download_competition_kernels(
         max_kernels_per_user: 每个用户最多下载多少个kernel
         base_output_dir: 基础输出目录
         save_csv_flag: 是否保存kernel列表为CSV
-        
+        user_ranks: {username: rank} 映射，用于写入kernel-metadata
+
     Returns:
         是否全部下载成功
     """
@@ -155,22 +157,32 @@ def download_competition_kernels(
         # 下载kernel
         for kernel_idx, kernel in enumerate(kernels, 1):
             kernel_ref = kernel.get("ref", "")
-            kernel_name = kernel.get("title", "unknown")
-            # Sanitize: remove Windows-invalid filename characters
-            kernel_name = re.sub(r'[<>:"/\\|?*]', '_', kernel_name)
-            kernel_name = kernel_name.strip().rstrip('.')
+            # 目录名用用户名（多 kernel 时加序号）
+            dir_name = username if len(kernels) == 1 else f"{username}_{kernel_idx}"
 
-            # 为每个kernel创建独立目录
-            kernel_dir = os.path.join(download_path, f"{kernel_idx}_{kernel_name}")
-            
-            print(f"    [{kernel_idx}/{len(kernels)}] {kernel_name}")
-            
+            kernel_dir = os.path.join(download_path, dir_name)
+            print(f"    [{kernel_idx}/{len(kernels)}] {kernel_ref}")
+
             success = download_kernel(
                 kernel_ref,
                 kernel_dir,
                 download_metadata=True
             )
-            
+            if success and user_ranks and username in user_ranks:
+                # 补充排名到 kernel-metadata.json
+                meta_path = os.path.join(kernel_dir, "kernel-metadata.json")
+                try:
+                    import json as _json
+                    meta = {}
+                    if os.path.exists(meta_path):
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            meta = _json.load(f)
+                    meta["leaderboard_rank"] = user_ranks[username]
+                    with open(meta_path, "w", encoding="utf-8") as f:
+                        _json.dump(meta, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
+
             if not success:
                 all_success = False
         

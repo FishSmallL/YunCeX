@@ -1,0 +1,24 @@
+{
+  "id": "steubk/jrsotc-ridgeregression",
+  "id_no": 21962450,
+  "title": "JRSoTC - RidgeRegression",
+  "code_file": "jrsotc-ridgeregression.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "keywords": [],
+  "dataset_sources": [
+    "julian3833/jigsaw-toxic-comment-classification-challenge"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [
+    "jigsaw-toxic-severity-rating"
+  ],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-images/python@sha256:6e3c00286de15827ab4964435164078261e676b83f4308640d482b989f819597",
+  "machine_shape": "None",
+  "leaderboard_rank": 3
+}

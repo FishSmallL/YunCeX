@@ -22,69 +22,26 @@ CATEGORIES = [
     "集成与后处理",
 ]
 
-EXTRACTION_PROMPT = """你是一个 Kaggle 竞赛专家。分析以下 kernel notebook，提取可复用的通用技巧。
-
-## 提取类别（8类，覆盖各类竞赛：表格/图像/文本/时序/语音）
-
-1. **数据处理** — 缺失值/异常值处理、数据清洗、格式转换、数据加载与流水线优化
-2. **特征与表示** — 特征工程(表格ML)、Embedding构建(DL/NLP)、Tokenizer设计、时序分解
-3. **模型设计** — 网络结构、Backbone选择、层/激活/注意力/归一化设计、多任务架构
-4. **训练策略** — 学习率调度、优化器选择、正则化、早停、梯度裁剪/累积、混合精度、EMA
-5. **验证与评估** — CV分折策略、防泄漏、稳定性评估、OOF预测、对抗验证、自定义评估指标
-6. **数据增强** — CV增广、NLP增广(回译/EDA)、表格合成、mixup/cutmix、时序增强
-7. **损失与指标** — 自定义损失函数、多任务加权、Label Smoothing、Focal Loss、排序损失
-8. **集成与后处理** — 模型融合、Stacking/Blending、TTA、概率校准、阈值优化、伪标签
-
-每类最多提取 5 个最重要的技巧；没有则跳过。
-
-## 输出格式
-返回 JSON 数组，每个元素一个技巧：
-```json
-[
-  {
-    "name": "英文短名-用连字符",
-    "description": "一句话说明该技巧解决什么问题（≤200字）",
-    "category": "模型设计",
-    "competition_type": "图像分类 | 文本分类 | 表格二分类 | 时序预测 | ...",
-    "estimated_impact": "高 | 中 | 低",
-    "technique": "详细说明（≤500字）。包含: 1)具体做法 2)为什么有效 3)相比常见做法的优势",
-    "code_pattern": "可执行的代码片段（含import），禁止占位注释如 # 这里做XX",
-    "use_case": "解决什么问题 | 什么场景适用（数据条件、问题类型、模型类型）",
-    "notes": "注意事项：失效场景、调参建议、常见错误"
-  }
-]
-```
-
-## important原则
-- estimated_impact 判断依据：该技巧在 notebook 中是否是核心亮点、占的篇幅、实现复杂度
-- code_pattern 必须是可执行的完整片段，包含必要的 import
-- use_case 合并了"解决什么问题"和"适用场景"，分点列出
-- 只提取**可迁移**的通用技巧，忽略竞赛特定的列名/路径/业务逻辑
-- 关注 notebook 中**实际实现**的代码，不是泛泛而谈的文字
-- 注意技巧对应的竞赛类型，不要假设所有技巧都适用于表格数据
-
-## notebook 内容
-{notebook_text}
-
-## 提取结果
-直接返回 JSON 数组，不要额外解释："""
-
 # 两阶段提取：Phase 1 亮点扫描
-SCAN_PROMPT = """你是一个 Kaggle 竞赛专家。快速浏览以下 notebook，识别 2-5 个最有价值的技术亮点。
+SCAN_PROMPT = """你是一个 Kaggle 竞赛专家。快速浏览以下 notebook，识别 2-4 个最有价值的技术亮点。
 
 ## 要求
 - 每个亮点一句话描述（≤100字）
 - 标注所属类别（从以下8类中选择）：数据处理、特征与表示、模型设计、训练策略、验证与评估、数据增强、损失与指标、集成与后处理
 - 标注预期影响力（高/中/低）：判断依据是该技术在 notebook 中的篇幅和是否是核心创新
 - 只关注**实际实现**的代码技巧，跳过泛泛而谈的文字
+- **如果 notebook 中没有值得提取的技术亮点（如仅有环境安装、pip install、import 等），直接返回 [] 空数组，不要输出任何解释文字**
 
 ## 输出格式
 直接返回 JSON 数组：
 ```json
 [
-  {"highlight": "...", "category": "模型设计", "impact": "高"},
-  {"highlight": "...", "category": "训练策略", "impact": "中"}
+  {"highlight": "...", "category": "模型设计", "impact": "高"}
 ]
+```
+没有亮点时：
+```json
+[]
 ```
 
 ## notebook 内容
@@ -126,41 +83,6 @@ DEEP_EXTRACT_PROMPT = """你是一个 Kaggle 竞赛专家。以下是从一个 k
 
 ## 提取结果
 直接返回 JSON 数组，不要额外解释："""
-
-
-def extract_skills_from_notebook(
-    notebook_text: str,
-    kernel_name: str,
-    competition: str,
-    keyword: str,
-    llm,
-) -> List[Dict]:
-    """用 LLM 从 notebook 文本中提取结构化技巧（单 pass）
-
-    Args:
-        notebook_text: 展平后的 notebook 文本
-        kernel_name: 来源 kernel 名称
-        competition: 竞赛 slug
-        keyword: 分类关键词
-        llm: HelloAgentsLLM 实例
-
-    Returns:
-        含 frontmatter 字段的 skill dict 列表
-    """
-    prompt = EXTRACTION_PROMPT.replace("{notebook_text}", notebook_text)
-
-    try:
-        response = llm.invoke(
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=8192,
-        )
-        raw = response.content.strip()
-    except Exception as e:
-        print(f"  LLM 提取失败: {e}")
-        return []
-
-    skills = _parse_llm_response(raw, kernel_name, competition, keyword)
-    return skills
 
 
 def _parse_llm_response(
@@ -211,32 +133,17 @@ def _parse_llm_response(
     return skills
 
 
-def _extract_json_array(raw: str):
-    """用括号平衡计数从 LLM 原始返回中提取 JSON 数组。
+def _try_parse_json(text: str, start: int):
+    """从指定位置尝试解析 JSON，返回收集到的对象列表，失败返回 None。
 
-    正确处理 JSON 内容中包含 triple backticks、转义引号、
-    嵌套括号等复杂情况。
+    支持: 完整数组 [{...}], 紧凑数组 [{...},{...}], 连续独立对象 {...}{...}
     """
-    text = raw.strip()
-
-    # 去除 markdown 代码围栏
-    if text.startswith("```"):
-        text = re.sub(r'^```\w*\s*\n?', '', text)
-        text = re.sub(r'\n?```\s*$', '', text)
-
-    # 找到 JSON 数组起始位置
-    start = text.find('[')
-    if start == -1:
-        start = text.find('{')
-        if start == -1:
-            return None
-
-    # 括号平衡状态机
     depth = 0
     in_string = False
     escape = False
     bracket_map = {'[': ']', '{': '}'}
     open_stack = []
+    collected = []
 
     for i in range(start, len(text)):
         ch = text[i]
@@ -244,15 +151,12 @@ def _extract_json_array(raw: str):
         if escape:
             escape = False
             continue
-
         if ch == '\\':
             escape = True
             continue
-
         if ch == '"' and not escape:
             in_string = not in_string
             continue
-
         if in_string:
             continue
 
@@ -272,13 +176,77 @@ def _extract_json_array(raw: str):
                     if isinstance(result, list):
                         return result
                     elif isinstance(result, dict):
-                        return [result]
-                except json.JSONDecodeError as e:
-                    print(f"  [DEBUG] JSON 解析失败: {e}")
-                    print(f"  [DEBUG] 提取内容 ({len(json_str)} 字): {json_str[:300]}")
-                    return None
+                        collected.append(result)
+                        # 继续向后找下一个对象
+                        next_start = -1
+                        for m in re.finditer(r'\{\s*"name"', text[i + 1:]):
+                            next_start = i + 1 + m.start()
+                            break
+                        if next_start == -1:
+                            return collected if collected else None
+                        start = next_start
+                        depth = 0
+                        open_stack = []
+                except json.JSONDecodeError:
+                    # 继续向后找下一个可能的起始位置
+                    next_start = -1
+                    for m in re.finditer(r'\{\s*"name"', text[i + 1:]):
+                        next_start = i + 1 + m.start()
+                        break
+                    if next_start == -1:
+                        return collected if collected else None
+                    start = next_start
+                    depth = 0
+                    open_stack = []
 
-    print(f"  [DEBUG] JSON 未闭合（depth={depth}），LLM 返回可能被截断（共 {len(text)} 字）")
+    return collected if collected else None
+
+
+def _extract_json_array(raw: str):
+    """从 LLM 原始返回中提取 JSON 数组，鲁棒处理各种格式。
+
+    支持: 格式化JSON(换行缩进)、紧凑JSON、连续独立对象、markdown围栏
+    """
+    text = raw.strip()
+
+    # 去除 markdown 代码围栏
+    if text.startswith("```"):
+        text = re.sub(r'^```\w*\s*\n?', '', text)
+        text = re.sub(r'\n?```\s*$', '', text)
+
+    # 找到 JSON 数组起始位置
+    # 策略：搜索所有可能的 '[' 起始位置，尝试解析，取最长有效结果
+    candidates = []
+
+    # 找所有可能是 JSON 数组起始的 '[' 位置
+    # 排除 markdown 中的 [类别]（前面是 '- ' 或 '* '）
+    for m in re.finditer(r'\[', text):
+        pos = m.start()
+        # 跳过 markdown 列表标签: "- [xxx]" 或 "* [xxx]"
+        prefix = text[max(0, pos - 2):pos]
+        if prefix in ('- ', '* '):
+            continue
+        # 跳过内联代码中的 "[" (前面是字母/数字/下划线)
+        if pos > 0 and text[pos - 1].isalnum():
+            continue
+        candidates.append(pos)
+
+    # 对每个候选位置尝试解析，取第一个成功或最长的结果
+    best_result = None
+    for start in candidates:
+        result = _try_parse_json(text, start)
+        if result and (best_result is None or len(result) > len(best_result)):
+            best_result = result
+
+    if best_result:
+        return best_result
+
+    # 回退：尝试找单个 JSON 对象
+    for m in re.finditer(r'\{\s*"name"', text):
+        result = _try_parse_json(text, m.start())
+        if result:
+            return result
+
     return None
 
 
@@ -328,15 +296,12 @@ def extract_skills_2pass(
                 if isinstance(h, dict) and h.get("highlight")
             ]
     except Exception as e:
-        print(f"  Phase 1 扫描失败: {e}，回退到单 pass")
-        return extract_skills_from_notebook(
-            notebook_text, kernel_name, competition, keyword, llm
-        )
+        print(f"  Phase 1 扫描失败: {e}")
+        return []
 
     if not highlights:
-        return extract_skills_from_notebook(
-            notebook_text, kernel_name, competition, keyword, llm
-        )
+        print(f"  Phase 1 未发现技术亮点，跳过提取")
+        return []
 
     print(f"  Phase 1: 识别到 {len(highlights)} 个亮点")
 
@@ -604,59 +569,3 @@ def _semantic_dedup(skills: List[Dict], llm) -> List[Dict]:
 
 # ── 批量提取（保留兼容） ──
 
-def extract_skills_from_notebooks_batch(
-    kernel_dirs: List[str],
-    keyword: str,
-    llm,
-) -> List[Dict]:
-    """批量处理多个 kernel 目录，提取所有技巧
-
-    Args:
-        kernel_dirs: kernel 目录路径列表
-        keyword: 分类关键词
-        llm: HelloAgentsLLM 实例
-
-    Returns:
-        聚合后的所有提取技巧列表
-    """
-    from .notebook_parser import (
-        parse_notebook,
-        notebook_to_text,
-        get_kernel_competition,
-    )
-
-    all_skills = []
-    for kdir in kernel_dirs:
-        kpath = Path(kdir)
-        if not kpath.is_dir():
-            continue
-
-        ipynb_files = list(kpath.glob("*.ipynb"))
-        if not ipynb_files:
-            print(f"  {kdir} 中未找到 .ipynb，跳过")
-            continue
-
-        ipynb_path = str(ipynb_files[0])
-        kernel_name = kpath.name
-
-        meta_files = list(kpath.glob("kernel-metadata.json"))
-        competition = (
-            get_kernel_competition(str(meta_files[0]))
-            if meta_files else "unknown"
-        )
-
-        print(f"  处理中: {kernel_name} (竞赛: {competition})")
-
-        try:
-            cells = parse_notebook(ipynb_path)
-            text = notebook_to_text(cells, max_len=30000)
-            skills = extract_skills_from_notebook(
-                text, kernel_name, competition, keyword, llm
-            )
-            print(f"    提取到 {len(skills)} 条技巧")
-            all_skills.extend(skills)
-        except Exception as e:
-            print(f"    处理 {kernel_name} 时出错: {e}")
-            continue
-
-    return all_skills
