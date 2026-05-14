@@ -21,22 +21,23 @@ def create_agent(
     system_prompt: Optional[str] = None
 ) -> Agent:
     """创建 Agent 实例
-    
+
     Args:
         agent_type: Agent 类型，支持：
             - "react": ReActAgent（推理-行动循环）
             - "reflection": ReflectionAgent（反思型）
             - "plan": PlanAndSolveAgent（规划-执行）
             - "simple": SimpleAgent（简单对话）
+            - "kernel_skill": KernelSkillAgent（Kaggle技能提取）
         name: Agent 名称
         llm: LLM 实例
         tool_registry: 工具注册表（可选）
         config: 配置对象（可选）
         system_prompt: 系统提示词（可选）
-        
+
     Returns:
         Agent 实例
-        
+
     Raises:
         ValueError: 不支持的 agent_type
     """
@@ -80,11 +81,21 @@ def create_agent(
             config=config,
             system_prompt=system_prompt
         )
-    
+
+    elif agent_type == "kernel_skill":
+        from .kernel_skill_agent import KernelSkillAgent
+        return KernelSkillAgent(
+            name=name,
+            llm=llm,
+            system_prompt=system_prompt,
+            config=config,
+            tool_registry=tool_registry,
+        )
+
     else:
         raise ValueError(
             f"不支持的 agent_type: {agent_type}。"
-            f"支持的类型: react, reflection, plan, simple"
+            f"支持的类型: react, reflection, plan, simple, kernel_skill"
         )
 
 
@@ -177,8 +188,19 @@ def _get_system_prompt_for_type(agent_type: str) -> str:
 - 保持回答简洁
 - 直接给出结果
 - 避免冗余信息
-"""
+""",
+        "kernel_skill": """你是一个竞赛技巧提取专家。
+
+目标：从 Kaggle kernel notebook 中提取可复用的技巧。
+
+规则：
+- 解析 notebook 内容，重点关注：数据预处理、特征工程、模型架构、集成策略、设计技巧
+- 每条技巧精简描述（≤200字），附带关键代码片段
+- 只提取可迁移的通用技巧，忽略竞赛特定细节
+- 重要：没什么技术的知识直接跳过，例如安装wheel，安装包等，只专注于技巧
+- 输出结构化 JSON，保存到 skill_library/
+""",
     }
-    
+
     return prompts.get(agent_type.lower(), prompts["simple"])
 

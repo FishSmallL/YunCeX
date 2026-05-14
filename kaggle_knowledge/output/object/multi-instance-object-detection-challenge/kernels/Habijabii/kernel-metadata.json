@@ -1,0 +1,26 @@
+{
+  "id": "habijabii/1st-place-solution",
+  "id_no": 86912817,
+  "title": "1st Place Solution",
+  "code_file": "1st-place-solution.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [
+    "gpu"
+  ],
+  "dataset_sources": [
+    "habijabii/soup-can"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [
+    "multi-instance-object-detection-challenge"
+  ],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-private-byod/python@sha256:320043e14c68293f1c946585b9257123385205a58af4b94b17d31868cae4e868",
+  "machine_shape": "Gpu",
+  "leaderboard_rank": 1
+}
