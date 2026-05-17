@@ -11,78 +11,146 @@ from pathlib import Path
 
 
 # 提取的 8 个关注类别（覆盖 ML/DL/CV/NLP/时序）
-CATEGORIES = [
-    "数据处理",
-    "特征与表示",
-    "模型设计",
-    "训练策略",
-    "验证与评估",
-    "数据增强",
-    "损失与指标",
-    "集成与后处理",
-]
+CATEGORIES = ["数据处理", "特征与表示", "模型设计", "训练策略", "验证与评估", "数据增强", "损失与指标", "集成与后处理",]
 
 # 两阶段提取：Phase 1 亮点扫描
-SCAN_PROMPT = """你是一个 Kaggle 竞赛专家。快速浏览以下 notebook，识别 2-4 个最有价值的技术亮点。
+SCAN_PROMPT = """假设你是一名 Kaggle Grandmaster，同时也是竞赛方案 reviewer。你的任务是帮助我识别 notebook 中最可能提升 leaderboard 分数的关键技术设计。
 
-## 要求
-- 每个亮点一句话描述（≤100字）
-- 标注所属类别（从以下8类中选择）：数据处理、特征与表示、模型设计、训练策略、验证与评估、数据增强、损失与指标、集成与后处理
-- 标注预期影响力（高/中/低）：判断依据是该技术在 notebook 中的篇幅和是否是核心创新
-- 只关注**实际实现**的代码技巧，跳过泛泛而谈的文字
-- **如果 notebook 中没有值得提取的技术亮点（如仅有环境安装、pip install、import 等），直接返回 [] 空数组，不要输出任何解释文字**
+请从 notebook 中筛选 2-4 个最具“竞赛价值”的技术亮点。
 
-## 输出格式
-直接返回 JSON 数组：
-```json
-[
-  {"highlight": "...", "category": "模型设计", "impact": "高"}
-]
-```
-没有亮点时：
-```json
-[]
-```
+## 你需要重点关注
+1. 是否属于 notebook 的核心建模思路
+2. 是否是区别于 baseline 的关键创新
+3. 是否包含复杂工程技巧或训练 trick
+4. 是否明显影响 CV/LB 分数
 
-## notebook 内容
-{notebook_text}
+## 仅提取“已实际实现”的代码逻辑
+不要提取：
+- TODO
+- 注释中的想法
+- 理论介绍
+- 环境安装
+- import
+- 普通读取数据流程
 
-## 扫描结果
-直接返回 JSON 数组，不要额外解释："""
+## 输出字段说明
+- highlight：一句话概括核心技巧（≤100字）
+- category：只能从以下类别中选择：[数据处理, 特征与表示, 模型设计, 训练策略, 验证与评估, 数据增强, 损失与指标, 集成与后处理]
+- impact：根据其在 notebook 中的重要性判断 [高/中/低]
+
+## 重要约束
+- 只返回 JSON 数组
+- 不输出解释
+- 不输出 markdown
+- 如果 notebook 没有实质技术内容，直接输出 []
+
+## 返回示例
+[{"highlight":"使用伪标签与交叉验证联合训练提升泛化能力","category":"训练策略","impact":"高"}]
+
+## Notebook 内容
+{notebook_text}"""
 
 # 两阶段提取：Phase 2 深度提取
-DEEP_EXTRACT_PROMPT = """你是一个 Kaggle 竞赛专家。以下是从一个 kernel 中识别到的技术亮点，请针对每个亮点深度提取结构化技巧。
+DEEP_EXTRACT_PROMPT = """你是一个 Kaggle Grandmaster 级别的竞赛方案拆解专家，擅长从 notebook 中深度提取可复用的技术技巧（technique primitives）。你的任务是基于已有 highlights，对 notebook 中对应实现进行“技术级逆向分析”，抽取真正具有迁移价值的结构化技巧。
 
-## 亮点列表
+## 输入
+### 已识别亮点
 {highlights}
 
-## 对应的 notebook 代码
+### Notebook 代码
 {notebook_text}
 
-## 提取要求
-参考上述亮点，从以下 8 个类别中提取技巧（没有则跳过）：
-1. **数据处理** 2. **特征与表示** 3. **模型设计** 4. **训练策略**
-5. **验证与评估** 6. **数据增强** 7. **损失与指标** 8. **集成与后处理**
+## 技巧提取目标
+请围绕 highlights 中的技术点，提取 notebook 里真正实现的高级技巧。
+
+重点识别：
+- 非 baseline 的工程优化
+- 影响 leaderboard 的关键 trick
+- 特殊训练/推理逻辑
+- 特征表达创新
+- 模型结构修改
+- 数据构造策略
+- loss / metric 优化
+- ensemble / postprocess 技术
+
+忽略：
+- import
+- pip install
+- 普通 dataloader
+- 常规 fit/train boilerplate
+- 未实际实现的注释
+- 简单 API 调用包装
+
+## category 必须严格从以下枚举中选择
+[数据处理, 特征与表示, 模型设计, 训练策略, 验证与评估, 数据增强, 损失与指标, 集成与后处理]
+
+## 输出字段要求
+### name
+- 英文短名
+- kebab-case（连字符）
+- 体现核心技术本质
+- 示例：tta-logit-average / pseudo-label-curriculum
+
+### description
+- 一句话说明该技巧解决的问题
+- ≤200字
+- 不要泛泛而谈
+
+### competition_type
+根据 notebook 自动推断：
+例如：
+- 图像分类
+- NLP 分类
+- 时间序列预测
+- CTR 预估
+- 表格回归
+- 多模态
+
+### estimated_impact 判定标准
+- 高：核心创新/主流程
+- 中：重要优化模块
+- 低：辅助技巧
+
+### technique（最重要）
+必须包含：
+1. 具体做法（代码层）
+2. 为什么有效（原理）
+3. 相比常规方案的优势
+4. 与 notebook 中其他模块如何配合
+
+禁止空泛描述。
+
+### code_pattern 要求
+- 必须基于 notebook 中真实代码
+- 必须可执行
+- 包含 import
+- 保留核心实现逻辑
+- 不要伪代码
+- 不要省略关键变量
+
+### use_case
+格式：
+"解决什么问题 | 什么场景适用"
+
+### notes
+必须包含：
+- 失效场景
+- 调参建议
+- 常见错误
+- 使用限制
+
+## 输出约束（极重要）
+- 仅返回 JSON 数组
+- 不输出 markdown
+- 不输出解释
+- 不输出注释
+- JSON 必须合法
+- 如果没有高价值技巧，返回 []
 
 ## 输出格式
-```json
-[
-  {
-    "name": "英文短名-用连字符",
-    "description": "一句话说明该技巧解决什么问题（≤200字）",
-    "category": "模型设计",
-    "competition_type": "图像分类",
-    "estimated_impact": "高",
-    "technique": "详细说明（≤500字）。包含: 1)具体做法 2)为什么有效 3)相比常见做法的优势",
-    "code_pattern": "可执行的代码片段（含import），基于 notebook 中的实际代码",
-    "use_case": "解决什么问题 | 什么场景适用",
-    "notes": "失效场景、调参建议、常见错误"
-  }
-]
-```
+[{"name":"tta-logit-average","description":"...","category":"集成与后处理","competition_type":"图像分类","estimated_impact":"高","technique":"...","code_pattern":"...","use_case":"...","notes":"..."}]
 
-## 提取结果
-直接返回 JSON 数组，不要额外解释："""
+现在开始分析，并直接返回 JSON。"""
 
 
 def _parse_llm_response(
