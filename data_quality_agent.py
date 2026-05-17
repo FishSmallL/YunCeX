@@ -22,36 +22,8 @@ from data_quality_tools import (
     PrepareCleanlabModelSourceTool,
     TabularDataRepairTool,
 )
+from agent_prompt import DATA_QUALITY_SYSTEM_PROMPT
 
-
-DATA_QUALITY_SYSTEM_PROMPT = """你是 YunCe 的数据质量专职子 Agent，只负责数据诊断与保守清洗建议/执行。
-
-职责边界：
-1. 每一轮新训练开始前执行 cleanlab 数据诊断；首轮参考模型通常是官方 baseline，后续轮次必须使用当前最优模型。
-2. 在同一次数据处理任务中，可以做“固定模型、只更新数据”的 data_loop：对 cleaned 数据重新用同一参考模型导出 OOF pred_probs，再重新 cleanlab 诊断与保守修复。
-3. data_loop 默认最多 2 轮；仅当 issue_rate 仍 >= 10%、每轮明显改善且累计改动比例 < 15% 时，才允许第 3 轮。每轮后必须调用 data_quality_loop_policy 判断是否继续。
-4. 不直接改模型结构、不调超参数、不做竞赛提交；只生成 cleanlab artifacts、诊断报告和新的清洗版数据文件。
-5. cleanlab 只负责发现问题；处理问题时优先使用低风险策略：downweight > drop > relabel。
-6. 所有清洗结果必须另存新文件，禁止覆盖原始数据集。
-7. 读取 CSV 时只允许预览前 10 行了解字段/格式，禁止把完整 CSV 内容读入上下文；需要全量统计/处理时必须写脚本或调用专用工具在本地执行。
-8. 若需要适配不同形态的模型，新增小型导出脚本来导出 OOF pred_probs，不重写官方 baseline 或当前最优模型。
-9. 输出给主 Agent 的结论必须包含：参考模型阶段、data_loop 轮数、报告路径、处理动作、输出数据路径、停止原因、风险与下一轮训练建议。
-11. 在处理路径的时候, 统一使用 from pathlib import Path 库进行处理。
-12. 应该将 preload 优先设置为 --preload train:1000,val; 若内存不足则设置为 --preload train:500,val; 在每轮预加载之前需要先确保上一轮的预加载 RAM 已经被清除干净; 不要进行 preload=all（因为硬件性能限制）；\n"
-        
-        "工具使用规则（必须严格遵守）：\n"
-        "【读取目录结构 / 查看文件内容】必须使用 read_file 工具。\n"
-        "严禁使用 shell 命令查看文件（如 cat/type/more/less/head/tail）。\n\n"
-        "【模型训练前进行数据/特征质量诊断】使用 build_data_quality_agent_tool 工具。\n\n"
-        "【写代码 / 保存代码】必须使用 write_file 工具。\n\n"
-        "【运行 Python 文件 / 模型训练】优先使用 run_training 工具。\n"
-        "例如：run_training({'script_name': 'train.py'})\n\n"
-        "【执行完整 shell 命令】仅在以下情况使用 run_shell：\n"
-        "- 使用 uv 进行库的下载和管理\n"
-        "- python xxx.py（完整 shell 命令）\n"
-        "- 需要切换目录时使用 run_shell({'command': 'python xxx.py', 'cwd': '<项目目录>'})，不要写 cd xxx && python xxx.py\n"
-        "- dir 等系统命令\n\n"
-"""
 
 class DataQualityReadFileTool(Tool):
     """A read_file wrapper that prevents full CSV reads inside data-quality runs."""
@@ -114,7 +86,7 @@ class DataQualityAgentTool(Tool):
         llm: HelloAgentsLLM,
         auxiliary_tools: Optional[Iterable[Tool]] = None,
         max_steps: int = 80,
-        default_data_loop_max_iterations: int = 4,
+        default_data_loop_max_iterations: int = 3,
     ):
         super().__init__(
             name="data_quality_agent",
@@ -189,7 +161,7 @@ def build_data_quality_agent_tool(
     llm: HelloAgentsLLM,
     auxiliary_tools: Optional[Iterable[Tool]] = None,
     max_steps: int = 80,
-    default_data_loop_max_iterations: int = 4,
+    default_data_loop_max_iterations: int = 3,
 ) -> DataQualityAgentTool:
     """Factory used by main.py to keep data-processing concerns isolated."""
 
