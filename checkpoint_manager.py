@@ -41,7 +41,7 @@ DEFAULT_MODEL_CANDIDATES = [
     "checkpoint_best.pt",
 ]
 
-MAX_CHECKPOINTS = 20  # 最多保留检查点数量，超出自动删除最旧的
+from project_config import MAX_CHECKPOINTS  # 最多保留检查点数量，超出自动删除最旧的
 
 
 class CheckpointManager:

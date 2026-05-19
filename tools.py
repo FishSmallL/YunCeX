@@ -530,7 +530,14 @@ class SaveCheckpointTool(Tool):
             ToolParameter(
                 name="note",
                 type="string",
-                description="备注：当前训练状态、F1分数、即将进行的操作，供回滚时参考",
+                description="""备注，必须详细填写以下信息（用分号分隔）：
+                    "1)当前使用的模型/配置文件路径；"
+                    "2)当前 F1_cal 及各子指标(f1_a/f1_s/f1_d)；"
+                    "3)本轮改了什么（超参数/模型结构/数据/训练策略）；"
+                    "4)为什么这样改（理论依据）；"
+                    "5)预期效果。"
+                    "示例: '模型:configs/v3_lr1e-3.yaml; F1_cal=0.428(f1_a=0.45,f1_s=0.41,f1_d=0.42); "
+                    "改动:lr从1e-3降到1e-4; 依据:loss震荡疑似lr过大; 预期:F1提升至0.44+'""",
                 required=False,
                 default=""
             ),

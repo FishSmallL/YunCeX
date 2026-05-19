@@ -20,7 +20,7 @@ from tools import (
 from data_quality_agent import build_data_quality_agent_tool
 from memory_manager import MemoryManager
 
-from project_config import PROJECT_ROOT, DATASET_ROOT, MEMORY_ROOT, ORIGINAL_PROJECT_ROOT
+from project_config import PROJECT_ROOT, DATASET_ROOT, MEMORY_ROOT, ORIGINAL_PROJECT_ROOT, DEVICE
 from agent_prompt import MAIN_AGENT_PROMPT
 
 load_dotenv()
@@ -34,7 +34,7 @@ _base_task = (
     f"使用工具 read_file 来读 {DATASET_ROOT} 下的文件,"
     "只去了解A1任务和完成A1任务,"
     "调用 build_data_quality_agent_tool 工具去进行数据/特征质量诊断之后再进行训练/优化,"
-    "历史记录中, 在 test set 上最有潜力的模型基础上进行优化, 使用 cuda:0 跑通模型"
+    f"根据历史记录进行优化, 不仅要借鉴表现良好的模型, 也要在表现不好的方案中吸收经验教训. 使用 {DEVICE} 跑通模型"
     "要持续优化模型, 然后训练模型看效果, 直到 F1_cal 达到 0.5 以上."
     "注意, 最关键的是 test_metrics 中的 score_a1 指标 (计算方式为: score_a1= (f1_a+f1_s+f1_d)/3, 细节见 run_meta.json)!"
 )
