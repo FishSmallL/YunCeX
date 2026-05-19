@@ -57,7 +57,7 @@ class Config(BaseModel):
     # 会话持久化配置
     session_enabled: bool = True  # 是否启用会话持久化
     session_dir: str = "memory/sessions"  # 会话文件保存目录
-    auto_save_enabled: bool = False  # 是否启用自动保存
+    auto_save_enabled: bool = True  # 是否启用自动保存
     auto_save_interval: int = 10  # 自动保存间隔（每N条消息）
 
     # 子代理机制配置

@@ -18,16 +18,20 @@ if TYPE_CHECKING:
 
 class TaskTool(Tool):
     """子代理工具
-    
+
     允许主 Agent 启动隔离的子代理来处理子任务。
-    
+
     特性：
     - 支持任意 Agent 类型（react/reflection/plan/simple）
     - 上下文隔离（子代理有独立历史）
     - 工具过滤（控制子代理可用工具）
     - 摘要返回（避免污染主上下文）
     - 可选轻量模型（节省成本）
+    - 全局互斥锁：同时只允许一个子 Agent 运行，其他排队等待
     """
+
+    import threading
+    _subagent_lock = threading.Lock()  # 类级别：所有 TaskTool 实例共享
     
     def __init__(
         self,
@@ -104,11 +108,18 @@ class TaskTool(Tool):
                 code=ToolErrorCode.INVALID_PARAM,
                 message="参数 'task' 不能为空"
             )
-        
+
+        # 全局互斥锁：同时只允许一个子 Agent 运行
+        acquired = TaskTool._subagent_lock.acquire(timeout=600)
+        if not acquired:
+            return ToolResponse.error(
+                code=ToolErrorCode.EXECUTION_ERROR,
+                message="另一个子 Agent 仍在运行，等待超时（600s）。请稍后重试。"
+            )
         try:
             # 2. 创建子代理实例
             subagent = self.agent_factory(agent_type)
-            
+
             # 3. 创建工具过滤器
             tool_filter = self._create_tool_filter(tool_filter_type)
 
@@ -156,20 +167,22 @@ class TaskTool(Tool):
                     },
                     stats={"time_ms": elapsed_ms}
                 )
-        
+
         except ValueError as e:
             # Agent 类型不支持
             return ToolResponse.error(
                 code=ToolErrorCode.INVALID_PARAM,
                 message=f"不支持的 agent_type: {agent_type}。{str(e)}"
             )
-        
+
         except Exception as e:
             # 其他错误
             return ToolResponse.error(
                 code=ToolErrorCode.EXECUTION_ERROR,
                 message=f"子代理执行失败: {str(e)}"
             )
+        finally:
+            TaskTool._subagent_lock.release()
     
     def _create_tool_filter(self, filter_type: str) -> Optional[ToolFilter]:
         """创建工具过滤器
